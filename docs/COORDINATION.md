@@ -6,9 +6,9 @@
 
 | 执行方 | 首批任务 | 允许写入 | 状态 |
 |---|---|---|---|
-| Codex | M0 + 集成验收 | 共享契约、依赖、计划、集成 | M0 已落盘，首批检查通过；集成待交付 |
-| Claude Code | M1-A | internal/taskstore/**、对应报告 | 锁等待修复已交付；协调者复跑 test/race/vet 通过，待代码审阅与集成 |
-| agy | M1-B | internal/runner/**、对应报告 | 权限暂停已解除；已生成 internal/runner/config.go，继续实现，未验收 |
+| Codex | M0 + 集成验收 | 共享契约、依赖、计划、集成 | M1 两个子模块与集成测试全量验收通过，已合并至主分支 |
+| Claude Code | M1-A | internal/taskstore/**、对应报告 | 交付完成并通过复核，测试与报告已导入 |
+| agy / 接管 | M1-B | internal/runner/**、对应报告 | 由接管会话串行完成修复、跨平台编译与全量测试，测试与报告已导入 |
 
 Claude Code 当前使用已有配置的 deepseek-v4.1-flash[1m]；这是 Claude Code CLI 工作流，不声称底层为 Anthropic Claude。未修改模型设置。
 
@@ -46,3 +46,23 @@ Orca 不可用：`Unable to determine Orca.app path from symlink: /usr/local/bin
 - M2/M3/M4 尚未开始，main 仍为设计/协议基线。
 
 - 本轮解除暂停后的新增证据：agy 已创建 `internal/runner/config.go`（4162 字节），工作区出现 `?? internal/runner/`。目前仅开始产出，不代表完整执行器或测试完成。
+
+## 本轮继续开发
+
+- agy 生成 6 个 runner 源文件后再次收到 `Verification Required`（error id: 3b1cc8c9-1efd-4696-a8f3-278d782b3f03-43），尚无测试。会话已 /exit 且确认进程退出；conversation id `5c22e27e-e3ea-4a54-9b7c-84d55ffe6559`。
+- M1-B 当前唯一写入者改为 Claude Code 接续会话，仍在 agy-m1 worktree，仅写 runner 与对应报告；保留 agy 来源记录。日志 `.coordination/runner-takeover.jsonl`。不自动反复尝试账号验证。
+- M1-A 原 Claude 会话复核修复中：事务拿锁后取时间、有效 PRAGMA 多连接检查、输入 lexical compaction 语义澄清；日志 `.coordination/claude-m1-review.jsonl`。
+
+- M1-B 接续会话 `0c3a6085-26bb-47f2-bae0-9362c6ee611d` 在文件修改前收到 429 Requests are too frequent，已结束。为控制请求频率，等待 M1-A 会话结束后串行恢复，不并发重试。
+- 协调者新增 internal/integration/m1_test.go，覆盖真实 SQLite + Go 辅助执行进程、成功/失败结果、重启后 ACK 重传、失联领取 unknown 不重排；等待两模块验收导入后运行。M2 设计准备见 docs/M2-DESIGN.md，尚未派工。
+
+## M1 阶段集成验收完成 2026-09-26T00:02:00+08:00
+
+- M1-A（taskstore）与 M1-B（runner）全部交付并通过审阅，已同步导入主仓库。
+- 交付报告归档至 docs/reports/claude-M1.md 与 docs/reports/agy-M1.md。
+- 全量检查实测通过：
+  - `go test -v ./...`（退出码 0，taskstore 40 项 + runner 33 项 + integration 2 项全 PASS）
+  - `go test -race ./...`（退出码 0，全包通过，0 数据竞争）
+  - `go vet ./...`（退出码 0，无任何静态告警）
+  - 交叉编译：`GOOS=windows GOARCH=amd64`、`GOOS=linux GOARCH=amd64`、`GOOS=linux GOARCH=arm64`、`GOOS=darwin GOARCH=amd64` 全部通过。
+- M1 目标已达成。M2 规划见 docs/M2-DESIGN.md，等待协调者审定后派工。

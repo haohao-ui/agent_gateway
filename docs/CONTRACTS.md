@@ -28,6 +28,8 @@ func (s *Store) Expire(ctx context.Context, now time.Time) (int64, error)
 
 Submit 按 NodeID + IdempotencyKey 去重：同 payload 返回原任务，不同 payload ErrConflict；空 key 不去重。M2 按实际 actor 增加作用域，M1 不宣称多用户权限。
 
+M1 输入相等定义为去除非字符串内空白后的 JSON 字节相等（lexical compaction），不承诺键顺序/转义写法的语义等价。终态相同结果重传仍需验证 attempt/token hash，但不重新要求租约未过期，支持 ACK 丢失后的恢复。租约判定与续期起点必须在取得写锁后读取当前时间，不能使用等待锁之前的旧时间。M1-A 报告中的标签长度限制与 ErrorCode 格式限制作为当前输入上限接受。
+
 Claim 在原子事务领取 node 最早 queued 任务；无任务返回 nil,nil；每次生成 attempt 和秘密，存 hash。leaseFor >0 且 <=5m；Start/Renew/Complete 必须拒绝已过期租约。
 
 Cancel：queued→cancelled；leased/running→cancel_requested；terminal/重复取消返回现态。cancel_requested 允许 Renew 使取消处理可报告；Complete 只接受 cancelled，拒绝 succeeded/failed（以服务器先到的取消为准，外部副作用仍可能已经发生）。leased 不允许成功完成；必须先 Start。Expire 将过期 leased/running/cancel_requested 转 unknown，不自动重排。unknown 不能 Complete；核对恢复留给 M2 明确设计。
