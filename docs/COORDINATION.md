@@ -8,7 +8,7 @@
 |---|---|---|---|
 | Codex | M0 + 集成验收 | 共享契约、依赖、计划、集成 | M0 已落盘，首批检查通过；集成待交付 |
 | Claude Code | M1-A | internal/taskstore/**、对应报告 | 锁等待修复已交付；协调者复跑 test/race/vet 通过，待代码审阅与集成 |
-| agy | M1-B | internal/runner/**、对应报告 | 尚无执行器源码；检查发现暂停于 Windows go vet 授权，已放行恢复 |
+| agy | M1-B | internal/runner/**、对应报告 | 权限暂停已解除；已生成 internal/runner/config.go，继续实现，未验收 |
 
 Claude Code 当前使用已有配置的 deepseek-v4.1-flash[1m]；这是 Claude Code CLI 工作流，不声称底层为 Anthropic Claude。未修改模型设置。
 
@@ -44,3 +44,5 @@ Orca 不可用：`Unable to determine Orca.app path from symlink: /usr/local/bin
 - agy：核查时 internal/runner 与交付报告尚不存在；会话停在 `GOOS=windows GOARCH=amd64 go vet ./internal/protocol` 权限提示。协调者已仅在本会话允许该命令，继续执行。
 - 更正：会话存活不等于持续编码。后续状态按实际改动与工具输出更新；交互式 worker 仍可能被新命令授权暂停。
 - M2/M3/M4 尚未开始，main 仍为设计/协议基线。
+
+- 本轮解除暂停后的新增证据：agy 已创建 `internal/runner/config.go`（4162 字节），工作区出现 `?? internal/runner/`。目前仅开始产出，不代表完整执行器或测试完成。
