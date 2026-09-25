@@ -7,12 +7,12 @@
 | 执行方 | 首批任务 | 允许写入 | 状态 |
 |---|---|---|---|
 | Codex | M0 + 集成验收 | 共享契约、依赖、计划、集成 | M0 已落盘，首批检查通过；集成待交付 |
-| Claude Code | M1-A | internal/taskstore/**、对应报告 | 已通过 CLI 派发，执行中，尚未验收 |
-| agy | M1-B | internal/runner/**、对应报告 | 阻塞：403 Verification Required，任务书已准备 |
+| Claude Code | M1-A | internal/taskstore/**、对应报告 | 首批代码已交付；协调者实测发现锁等待测试失败，已派回修复 |
+| agy | M1-B | internal/runner/**、对应报告 | 账号已恢复；交互式会话已接受任务并读取项目文档，开发中 |
 
 Claude Code 当前使用已有配置的 deepseek-v4.1-flash[1m]；这是 Claude Code CLI 工作流，不声称底层为 Anthropic Claude。未修改模型设置。
 
-Orca 不可用：`Unable to determine Orca.app path from symlink: /usr/local/bin/orca`。停止该路径，直接使用 CLI 与独立 Git worktree；不是 Orca 托管会话。agy 连通检查返回非重试错误 `PERMISSION_DENIED (code 403): Verify your account to continue.`，须用户在该产品内完成验证，不修改账号凭据。
+Orca 不可用：`Unable to determine Orca.app path from symlink: /usr/local/bin/orca`。停止该路径，直接使用 CLI 与独立 Git worktree；不是 Orca 托管会话。agy 首次连通检查曾返回 `PERMISSION_DENIED (code 403): Verify your account to continue.`。用户随后确认已恢复可运行，协调者已重派实际 M1-B 任务；新的调用不修改账号凭据。
 
 ## 调度规则
 
@@ -27,11 +27,13 @@ Orca 不可用：`Unable to determine Orca.app path from symlink: /usr/local/bin
 - agy worktree：`/Users/yang/tools/code/agent-gateway-worktrees/agy-m1`，分支 `worker/agy-m1`。
 - Claude 采用 print + acceptEdits 与受限的 Go/格式化/读取 Git shell 允许列表；没有启用 bypassPermissions。
 - Claude 日志：`.coordination/claude-m1.jsonl`、`.coordination/claude-m1.stderr`；最终报告目标 `docs/reports/claude-M1.md`（开发 worktree 内）。
-- agy 尚未提交开发调用：连通检查已明确返回账号验证错误，避免重复失败消耗。验证恢复后在 agy worktree 执行 `agy --mode accept-edits --print '读取 AGENTS.md 和 docs/tasks/AGY-M1.md，按契约完成 M1-B，实现并测试，只修改允许目录，完成后写报告。' --output-format json`。
+- agy 已在对应 worktree 使用 `--mode accept-edits --print ... --output-format json` 提交详细 M1-B 提示词；日志为 `.coordination/agy-m1.jsonl` 和 `.coordination/agy-m1.stderr`。未启用 skip-permissions。
 - `.coordination/claude-prompt.txt`、`.coordination/agy-prompt.txt` 保存本机详细派工提示词，正式版本以 docs/tasks 为准。
 
 ## 状态与下一步
 
 - 已验证 Go 1.27.1 可通过 GOTOOLCHAIN 按需运行，系统默认仍为 1.22.7。
 - 初始共享协议 `go test ./...` 通过（尚无业务测试）；具体业务完成必须等 worker 交付后独立检查。
-- agy 账号验证未完成前，不能宣称两个开发者都在编码。
+- agy 无交互重派因 MCP 权限被自动拒绝（非账号错误）；已改用交互式会话，只在当前会话批准 list_projects，只信任独立工作区，未写全局允许规则。已实际开始读取 AGENTS.md。
+- Claude 初次报告的检查被 rtk 包装器权限拦截。协调者实际运行 `go test ./internal/taskstore`，发现 `TestClaimFailsFastWhileWriteLockHeld` 约 5.05 秒后 SQLITE_BUSY，未遵守 caller context。已通过原会话派回修复并增加仅 Go/rtk Go 检查的命令允许范围。
+- CLI 会话标识（仅本次协调运行）：agy interactive exec session 45989；Claude 修复 exec session 74810；日志 .coordination/claude-m1-fix.jsonl。不得把测试数量当作验收通过。
