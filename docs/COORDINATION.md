@@ -7,8 +7,8 @@
 | 执行方 | 首批任务 | 允许写入 | 状态 |
 |---|---|---|---|
 | Codex | M0 + 集成验收 | 共享契约、依赖、计划、集成 | M0 已落盘，首批检查通过；集成待交付 |
-| Claude Code | M1-A | internal/taskstore/**、对应报告 | 首批代码已交付；协调者实测发现锁等待测试失败，已派回修复 |
-| agy | M1-B | internal/runner/**、对应报告 | 账号已恢复；交互式会话已接受任务并读取项目文档，开发中 |
+| Claude Code | M1-A | internal/taskstore/**、对应报告 | 锁等待修复已交付；协调者复跑 test/race/vet 通过，待代码审阅与集成 |
+| agy | M1-B | internal/runner/**、对应报告 | 尚无执行器源码；检查发现暂停于 Windows go vet 授权，已放行恢复 |
 
 Claude Code 当前使用已有配置的 deepseek-v4.1-flash[1m]；这是 Claude Code CLI 工作流，不声称底层为 Anthropic Claude。未修改模型设置。
 
@@ -37,3 +37,10 @@ Orca 不可用：`Unable to determine Orca.app path from symlink: /usr/local/bin
 - agy 无交互重派因 MCP 权限被自动拒绝（非账号错误）；已改用交互式会话，只在当前会话批准 list_projects，只信任独立工作区，未写全局允许规则。已实际开始读取 AGENTS.md。
 - Claude 初次报告的检查被 rtk 包装器权限拦截。协调者实际运行 `go test ./internal/taskstore`，发现 `TestClaimFailsFastWhileWriteLockHeld` 约 5.05 秒后 SQLITE_BUSY，未遵守 caller context。已通过原会话派回修复并增加仅 Go/rtk Go 检查的命令允许范围。
 - CLI 会话标识（仅本次协调运行）：agy interactive exec session 45989；Claude 修复 exec session 74810；日志 .coordination/claude-m1-fix.jsonl。不得把测试数量当作验收通过。
+
+## 最新进度核查 2026-09-25T23:22:50+08:00
+
+- Claude：实际复跑 `go test ./...`（taskstore 1.725s）、`go test -race ./...`（3.234s）、`go vet ./...` 全部退出 0。测试通过不是代码审阅或 M1 集成完成。
+- agy：核查时 internal/runner 与交付报告尚不存在；会话停在 `GOOS=windows GOARCH=amd64 go vet ./internal/protocol` 权限提示。协调者已仅在本会话允许该命令，继续执行。
+- 更正：会话存活不等于持续编码。后续状态按实际改动与工具输出更新；交互式 worker 仍可能被新命令授权暂停。
+- M2/M3/M4 尚未开始，main 仍为设计/协议基线。
