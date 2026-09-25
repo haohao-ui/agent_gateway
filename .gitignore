@@ -1,0 +1,9 @@
+.coordination/
+bin/
+dist/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.test
+coverage.out
+.DS_Store
