@@ -182,6 +182,47 @@ func (s *Store) Revoke(ctx context.Context, nodeID, actor, reason string) error 
 	})
 }
 
+// Device represents a registered node certificate binding and its status.
+type Device struct {
+	NodeID      string    `json:"node_id"`
+	Fingerprint string    `json:"fingerprint"`
+	ExpiresAt   time.Time `json:"expires_at"`
+	Revoked     bool      `json:"revoked"`
+}
+
+// List returns all registered devices in the database ordered by node_id.
+func (s *Store) List(ctx context.Context) ([]Device, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT node_id, fingerprint, expires_at, revoked FROM devices ORDER BY node_id ASC")
+	if err != nil {
+		return nil, fmt.Errorf("list devices: %w", err)
+	}
+	defer rows.Close()
+
+	var devices []Device
+	for rows.Next() {
+		var d Device
+		var expiry string
+		var revoked int
+		if err := rows.Scan(&d.NodeID, &d.Fingerprint, &expiry, &revoked); err != nil {
+			return nil, fmt.Errorf("scan device: %w", err)
+		}
+		until, err := time.Parse(timeFormat, expiry)
+		if err != nil {
+			return nil, fmt.Errorf("parse device expiry: %w", err)
+		}
+		d.ExpiresAt = until
+		d.Revoked = revoked == 1
+		devices = append(devices, d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list devices: %w", err)
+	}
+	if devices == nil {
+		devices = []Device{}
+	}
+	return devices, nil
+}
+
 // SQLite's busy handler may not immediately observe cancellation; each wait is
 // bounded to 200ms, with context-aware retries and an overall five-second cap.
 func (s *Store) write(ctx context.Context, fn func(*sql.Tx) error) error {

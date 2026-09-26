@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"agent-gateway/internal/devicestore"
 	"agent-gateway/internal/identity"
 	"agent-gateway/internal/policy"
 	"agent-gateway/internal/protocol"
@@ -198,9 +199,20 @@ func operatorTaskCommand(ctx context.Context, verb, server, ca, token, nodeID, i
 	return printTask(task)
 }
 func runDevice(ctx context.Context, args []string) error {
-	if len(args) == 0 || args[0] != "revoke" {
-		return errors.New("usage: mesh device revoke --server URL --ca FILE --token-file FILE --reason TEXT NODE_ID")
+	if len(args) == 0 {
+		return errors.New("usage: mesh device list|revoke [flags]")
 	}
+	switch args[0] {
+	case "list":
+		return runDeviceList(ctx, args[1:])
+	case "revoke":
+		return runDeviceRevoke(ctx, args[1:])
+	default:
+		return fmt.Errorf("unknown device verb %q (use list or revoke)", args[0])
+	}
+}
+
+func runDeviceRevoke(ctx context.Context, args []string) error {
 	cmd := newCommand("device revoke", "Revoke a node certificate using an administrator credential.")
 	server := cmd.flags.String("server", "", "HTTPS gateway origin")
 	ca := cmd.flags.String("ca", "", "trusted CA file")
@@ -220,4 +232,29 @@ func runDevice(ctx context.Context, args []string) error {
 	return c.request(ctx, "POST", "/v1/operator/devices/"+url.PathEscape(cmd.flags.Arg(0))+"/revoke", struct {
 		Reason string `json:"reason"`
 	}{*reason}, nil)
+}
+
+func runDeviceList(ctx context.Context, args []string) error {
+	cmd := newCommand("device list", "List registered devices (operator credential required).")
+	server := cmd.flags.String("server", "", "HTTPS gateway origin")
+	ca := cmd.flags.String("ca", "", "trusted CA file")
+	token := cmd.flags.String("token-file", "", "operator token file")
+	if err := cmd.flags.Parse(args); err != nil {
+		return err
+	}
+	c, err := newOperatorClient(*server, *ca, *token)
+	if err != nil {
+		return err
+	}
+	defer c.client.CloseIdleConnections()
+	var devices []devicestore.Device
+	if err := c.request(ctx, "GET", "/v1/operator/devices", nil, &devices); err != nil {
+		return err
+	}
+	encoded, err := json.MarshalIndent(devices, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Printf("%s\n", encoded)
+	return nil
 }

@@ -675,3 +675,47 @@ func TestConcurrent_InitialOpen(t *testing.T) {
 		}
 	}
 }
+
+func TestStore_List(t *testing.T) {
+	p := newTempDB(t)
+	s := openTestStore(t, p)
+	ctx := context.Background()
+
+	// Empty store returns empty slice
+	devices, err := s.List(ctx)
+	if err != nil {
+		t.Fatalf("List on empty store failed: %v", err)
+	}
+	if len(devices) != 0 {
+		t.Fatalf("expected 0 devices, got %d", len(devices))
+	}
+
+	exp := time.Now().Add(24 * time.Hour).Truncate(time.Microsecond)
+	// Register two devices
+	if err := s.Register(ctx, "node-b", testValidFingerprint, exp); err != nil {
+		t.Fatalf("register node-b failed: %v", err)
+	}
+	if err := s.Register(ctx, "node-a", testOtherFingerprint, exp); err != nil {
+		t.Fatalf("register node-a failed: %v", err)
+	}
+	// Revoke node-a
+	if err := s.Revoke(ctx, "node-a", "admin", "test revoke"); err != nil {
+		t.Fatalf("revoke node-a failed: %v", err)
+	}
+
+	devices, err = s.List(ctx)
+	if err != nil {
+		t.Fatalf("List failed: %v", err)
+	}
+	if len(devices) != 2 {
+		t.Fatalf("expected 2 devices, got %d", len(devices))
+	}
+
+	// Should be ordered by node_id ASC: node-a first, then node-b
+	if devices[0].NodeID != "node-a" || !devices[0].Revoked || devices[0].Fingerprint != testOtherFingerprint {
+		t.Fatalf("unexpected devices[0]: %+v", devices[0])
+	}
+	if devices[1].NodeID != "node-b" || devices[1].Revoked || devices[1].Fingerprint != testValidFingerprint {
+		t.Fatalf("unexpected devices[1]: %+v", devices[1])
+	}
+}

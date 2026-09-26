@@ -27,7 +27,7 @@ usage:
   mesh task [flags] <verb>   submit, get or cancel a task
 
   mesh credential issue|revoke   manage operator credentials locally
-  mesh device revoke            revoke a device as administrator
+  mesh device list|revoke        list or revoke enrolled devices
 
 Common flags:
   --log-level debug|info|warn|error   (default info)
@@ -53,7 +53,11 @@ func main() {
 	case "pair":
 		err = runPair(ctx, os.Args[2:])
 	case "node":
-		err = runNode(ctx, os.Args[2:])
+		if len(os.Args) > 2 && os.Args[2] == "list" {
+			err = runDeviceList(ctx, os.Args[3:])
+		} else {
+			err = runNode(ctx, os.Args[2:])
+		}
 	case "credential":
 		err = runCredential(ctx, os.Args[2:])
 	case "device":

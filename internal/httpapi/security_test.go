@@ -317,3 +317,48 @@ func TestSecureOperatorReconcileRequeueAndResolve(t *testing.T) {
 		t.Fatalf("resolved state want failed, got %s", resolved.State)
 	}
 }
+
+func TestSecureOperatorListDevices(t *testing.T) {
+	s, ts, ca := secureFixture(t)
+	nodeA := pairNode(t, ts, ca)
+	nodeB := pairNode(t, ts, ca)
+	c := unauthenticatedClient(t, ca)
+	defer c.CloseIdleConnections()
+	defer nodeA.client.CloseIdleConnections()
+	defer nodeB.client.CloseIdleConnections()
+
+	admin := issueRole(t, s, policy.Admin)
+	opA := issueRole(t, s, policy.Operator, nodeA.nodeID)
+
+	// Admin sees both nodes
+	status, body := operatorCall(t, c, "GET", ts.URL+"/v1/operator/devices", admin, nil)
+	if status != 200 {
+		t.Fatalf("admin list devices: %d", status)
+	}
+	var allDevices []devicestore.Device
+	if err := json.Unmarshal(body, &allDevices); err != nil {
+		t.Fatal(err)
+	}
+	if len(allDevices) != 2 {
+		t.Fatalf("admin expected 2 devices, got %d", len(allDevices))
+	}
+
+	// Operator A only sees nodeA
+	status, body = operatorCall(t, c, "GET", ts.URL+"/v1/operator/devices", opA, nil)
+	if status != 200 {
+		t.Fatalf("opA list devices: %d", status)
+	}
+	var opDevices []devicestore.Device
+	if err := json.Unmarshal(body, &opDevices); err != nil {
+		t.Fatal(err)
+	}
+	if len(opDevices) != 1 || opDevices[0].NodeID != nodeA.nodeID {
+		t.Fatalf("opA expected only nodeA, got %+v", opDevices)
+	}
+
+	// Unauthenticated request rejected
+	status, _ = operatorCall(t, c, "GET", ts.URL+"/v1/operator/devices", "", nil)
+	if status != 401 {
+		t.Fatalf("unauthenticated list devices want 401, got %d", status)
+	}
+}

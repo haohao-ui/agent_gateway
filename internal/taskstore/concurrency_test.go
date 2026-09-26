@@ -268,8 +268,11 @@ func TestConcurrentExpireAndComplete(t *testing.T) {
 		if completeErr != nil {
 			t.Fatalf("the task succeeded but Complete reported %v", completeErr)
 		}
-		if moved != 0 {
-			t.Fatalf("Expire moved %d tasks after the task had already finished", moved)
+		// With M2 reconciliation, Expire may run first (moved=1) followed by Complete
+		// reconciling the unknown task into Succeeded, or Complete may run first (moved=0)
+		// causing Expire to find no leased tasks. Both interleavings yield Succeeded.
+		if moved != 0 && moved != 1 {
+			t.Fatalf("unexpected moved count: %d", moved)
 		}
 	default:
 		t.Fatalf("final state = %s, want unknown or succeeded", final.State)

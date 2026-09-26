@@ -91,6 +91,7 @@ func (s *Server) registerOperatorRoutes() {
 	s.mux.HandleFunc("POST /v1/operator/tasks/{id}/requeue", s.requireOperator(s.operatorRequeue))
 	s.mux.HandleFunc("POST /v1/operator/tasks/{id}/resolve", s.requireOperator(s.operatorResolve))
 	s.mux.HandleFunc("GET /v1/operator/tasks", s.requireOperator(s.operatorList))
+	s.mux.HandleFunc("GET /v1/operator/devices", s.requireOperator(s.operatorListDevices))
 	s.mux.HandleFunc("POST /v1/operator/devices/{id}/revoke", s.requireOperator(s.operatorRevoke))
 }
 func (s *Server) operatorSubmit(w http.ResponseWriter, r *http.Request) {
@@ -224,4 +225,26 @@ func (s *Server) operatorRevoke(w http.ResponseWriter, r *http.Request) {
 	}
 	s.notifyNode(r.PathValue("id"))
 	w.WriteHeader(200)
+}
+func (s *Server) operatorListDevices(w http.ResponseWriter, r *http.Request) {
+	if s.devices == nil {
+		writeError(w, 503, "unavailable", "device registry unavailable")
+		return
+	}
+	p := operatorPrincipal(r)
+	devices, err := s.devices.List(r.Context())
+	if err != nil {
+		handleStoreError(w, err)
+		return
+	}
+	var filtered []devicestore.Device
+	for _, d := range devices {
+		if policy.Authorize(p, "task.read", d.NodeID) == nil {
+			filtered = append(filtered, d)
+		}
+	}
+	if filtered == nil {
+		filtered = []devicestore.Device{}
+	}
+	writeJSON(w, 200, filtered)
 }
