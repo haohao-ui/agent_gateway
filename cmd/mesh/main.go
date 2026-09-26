@@ -31,6 +31,7 @@ usage:
   mesh doctor [flags]            diagnose node or server environment and connectivity
   mesh mcp [flags]               run Model Context Protocol (MCP) server over stdio
   mesh file <action> [flags]     manage task artifacts (upload, download, list, delete)
+  mesh service <action> [flags]  manage background system service (install, uninstall, status)
 
 Common flags:
   --log-level debug|info|warn|error   (default info)
@@ -73,6 +74,8 @@ func main() {
 		err = runMCP(ctx, os.Args[2:])
 	case "file":
 		err = runFile(ctx, os.Args[2:])
+	case "service":
+		err = runService(ctx, os.Args[2:])
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 		return
