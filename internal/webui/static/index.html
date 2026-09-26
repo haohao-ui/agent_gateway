@@ -215,19 +215,32 @@
             </div>
           </div>
 
-          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin: 16px 0;">
-            <div style="background: var(--bg-input); padding: 14px 18px; border-radius: 8px; border: 1px solid var(--border-color);">
-              <span class="detail-label">HTTP / SSE MCP 服务端点</span>
-              <div style="display: flex; gap: 8px; align-items: center; margin-top: 6px;">
-                <code id="mcp-endpoint-url" style="font-size: 13px; color: var(--primary); word-break: break-all;">https://127.0.0.1:8443/mcp</code>
-                <button class="btn btn-secondary btn-sm copy-btn" data-target="mcp-endpoint-url">复制</button>
+          <div style="display: grid; grid-template-columns: 1fr; gap: 16px; margin: 16px 0;">
+            <div style="background: rgba(56, 189, 248, 0.08); padding: 16px 20px; border-radius: 10px; border: 1px solid rgba(56, 189, 248, 0.3);">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                <span class="detail-label" style="font-weight: 600; color: var(--primary); font-size: 14px;">🚀 极简免配置 URL（豆包桌面版 / 各类 AI 客户端通用，推荐）</span>
+                <button class="btn btn-primary btn-sm copy-btn" data-target="mcp-full-url" style="font-weight: 600;">📋 一键复制完整服务 URL</button>
+              </div>
+              <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 8px;">该 URL 已内置当前管理员凭据。在豆包桌面版或其他客户端中，<strong>直接粘贴此单一 URL 即可，无需手动配置任何请求头（Headers）</strong>：</p>
+              <div style="display: flex; gap: 8px; align-items: center;">
+                <code id="mcp-full-url" style="font-size: 13px; color: #a7f3d0; word-break: break-all; background: var(--bg-card); padding: 8px 12px; border-radius: 6px; width: 100%; border: 1px solid var(--border-color);">-</code>
               </div>
             </div>
-            <div style="background: var(--bg-input); padding: 14px 18px; border-radius: 8px; border: 1px solid var(--border-color);">
-              <span class="detail-label">操作员 Bearer Token</span>
-              <div style="display: flex; gap: 8px; align-items: center; margin-top: 6px;">
-                <code id="mcp-token-val" style="font-size: 13px; color: #a7f3d0; word-break: break-all;">-</code>
-                <button class="btn btn-secondary btn-sm copy-btn" data-target="mcp-token-val">复制</button>
+
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px;">
+              <div style="background: var(--bg-input); padding: 14px 18px; border-radius: 8px; border: 1px solid var(--border-color);">
+                <span class="detail-label">基础 MCP 端点（不含参数）</span>
+                <div style="display: flex; gap: 8px; align-items: center; margin-top: 6px;">
+                  <code id="mcp-endpoint-url" style="font-size: 13px; color: var(--primary); word-break: break-all;">https://127.0.0.1:8443/mcp</code>
+                  <button class="btn btn-secondary btn-sm copy-btn" data-target="mcp-endpoint-url">复制</button>
+                </div>
+              </div>
+              <div style="background: var(--bg-input); padding: 14px 18px; border-radius: 8px; border: 1px solid var(--border-color);">
+                <span class="detail-label">操作员 Bearer Token</span>
+                <div style="display: flex; gap: 8px; align-items: center; margin-top: 6px;">
+                  <code id="mcp-token-val" style="font-size: 13px; color: #a7f3d0; word-break: break-all;">-</code>
+                  <button class="btn btn-secondary btn-sm copy-btn" data-target="mcp-token-val">复制</button>
+                </div>
               </div>
             </div>
           </div>
@@ -238,7 +251,7 @@
           <div class="card-header-flex">
             <div>
               <h3>📋 运维同事协作提示词（一键复制发给同事）</h3>
-              <p class="form-desc">直接复制以下模板文本发送给开发同事，对方可直接在豆包或 Codex 中配置接入：</p>
+              <p class="form-desc">直接复制以下模板文本发送给协作同事，对方将完整 URL 填入豆包或 Codex 即可立即开始协作：</p>
             </div>
             <button id="copy-prompt-btn" class="btn btn-primary">一键复制协作指南</button>
           </div>
@@ -250,16 +263,15 @@
           <div class="card">
             <div class="card-header-flex">
               <h3>豆包桌面版 (Doubao Desktop)</h3>
-              <button class="btn btn-secondary btn-sm copy-btn" data-target="mcp-doubao-cfg">复制配置</button>
+              <button class="btn btn-secondary btn-sm copy-btn" data-target="mcp-doubao-url">复制服务 URL</button>
             </div>
             <p class="form-desc" style="margin-top: 6px;">在豆包进入【设置】->【MCP 扩展/插件】->【添加服务】：</p>
             <div style="margin-top: 10px; font-size: 13px; color: var(--text-secondary); line-height: 1.8;">
               <div>• <strong>协议类型</strong>：<code>SSE (Server-Sent Events) / HTTP</code></div>
               <div>• <strong>服务名称</strong>：<code>agent-gateway</code></div>
-              <div>• <strong>服务 URL</strong>：<code id="mcp-doubao-url">-</code></div>
-              <div>• <strong>请求头 (Headers)</strong>：<code id="mcp-doubao-header">Authorization: Bearer ...</code></div>
+              <div>• <strong>服务 URL</strong>（已带 Token，直接粘贴）：<br><code id="mcp-doubao-url" style="word-break: break-all; color: #a7f3d0;">-</code></div>
+              <div>• <strong>自定义 Headers</strong>：可留空（URL 已携带凭据）</div>
             </div>
-            <textarea id="mcp-doubao-cfg" style="display: none;"></textarea>
           </div>
 
           <div class="card">
