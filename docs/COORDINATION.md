@@ -164,6 +164,16 @@ Orca 不可用：`Unable to determine Orca.app path from symlink: /usr/local/bin
   - 验证结果：全包单元测试与 `-race` 竞态检测全部通过、`gofmt` 规范、`go vet` 零告警、Linux/Windows 交叉编译成功；
   - 交付验收报告 `docs/reports/mcp.md`。
 
+### M3-B：安全文件传输与任务产物沙箱完成（2026-09-26）
+
+- 主线合入（分支 `feat/file-transfer`）：
+  - `internal/artifact`：核心产物存储，基于 Go 1.24+ 标准库 `os.Root` 严格限制目录访问，从根本上杜绝路径穿越（`..`）漏洞；支持 SHA-256 校验和原子发布（Atomic Rename）；
+  - `internal/httpapi`：挂载 `PUT/GET/DELETE /v1/artifacts/{id}/{filename}` 与 `GET /v1/artifacts/{id}` 产物端点；全面支持 HTTP Range 断点续传（Partial Content 206）；支持 mTLS 节点身份与操作员 Bearer 身份权限过滤；
+  - `cmd/mesh`：新增 `mesh file upload/download/list/delete` 命令，支持直连本地目录或远程网关传输；
+  - 验证结果：全包单元测试与 `-race` 竞态检测全数通过、`gofmt` 规范、`go vet` 零告警、Linux/Windows 交叉编译成功；
+  - 交付验收报告 `docs/reports/file-transfer.md`。
+
+
 
 
 
