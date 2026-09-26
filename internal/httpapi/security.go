@@ -5,8 +5,10 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/hex"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -60,7 +62,7 @@ const principalContextKey contextKey = "principal"
 
 func (s *Server) requireOperator(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if r.TLS == nil || s.policies == nil {
+		if (r.TLS == nil && !s.allowPlainHTTP) || s.policies == nil {
 			writeError(w, 401, "unauthorized", "HTTPS operator authentication required")
 			return
 		}
@@ -109,6 +111,8 @@ func (s *Server) registerOperatorRoutes() {
 	s.mux.HandleFunc("GET /v1/operator/tasks", s.requireOperator(s.operatorList))
 	s.mux.HandleFunc("GET /v1/operator/devices", s.requireOperator(s.operatorListDevices))
 	s.mux.HandleFunc("POST /v1/operator/devices/{id}/revoke", s.requireOperator(s.operatorRevoke))
+	s.mux.HandleFunc("POST /v1/operator/devices/{id}/restart", s.requireOperator(s.operatorRestartDevice))
+	s.mux.HandleFunc("POST /v1/operator/devices/{id}/upgrade", s.requireOperator(s.operatorUpgradeDevice))
 }
 func (s *Server) operatorSubmit(w http.ResponseWriter, r *http.Request) {
 	var in protocol.SubmitRequest
@@ -275,6 +279,19 @@ func (s *Server) operatorRevoke(w http.ResponseWriter, r *http.Request) {
 	s.notifyNode(r.PathValue("id"))
 	w.WriteHeader(200)
 }
+type OperatorDeviceView struct {
+	NodeID      string                   `json:"node_id"`
+	Fingerprint string                   `json:"fingerprint"`
+	ExpiresAt   time.Time                `json:"cert_expires_at"`
+	Revoked     bool                     `json:"revoked"`
+	Version     string                   `json:"version,omitempty"`
+	OS          string                   `json:"os,omitempty"`
+	Arch        string                   `json:"arch,omitempty"`
+	Agents      []protocol.AgentSoftware `json:"agents,omitempty"`
+	Online      bool                     `json:"online"`
+	LastSeen    *time.Time               `json:"last_seen,omitempty"`
+}
+
 func (s *Server) operatorListDevices(w http.ResponseWriter, r *http.Request) {
 	if s.devices == nil {
 		writeError(w, 503, "unavailable", "device registry unavailable")
@@ -286,14 +303,96 @@ func (s *Server) operatorListDevices(w http.ResponseWriter, r *http.Request) {
 		handleStoreError(w, err)
 		return
 	}
-	var filtered []devicestore.Device
+
+	now := time.Now().UTC()
+	var views []OperatorDeviceView
 	for _, d := range devices {
 		if policy.Authorize(p, "task.read", d.NodeID) == nil {
-			filtered = append(filtered, d)
+			v := OperatorDeviceView{
+				NodeID:      d.NodeID,
+				Fingerprint: d.Fingerprint,
+				ExpiresAt:   d.ExpiresAt,
+				Revoked:     d.Revoked,
+				Online:      false,
+			}
+			if val, ok := s.nodeRuntime.Load(d.NodeID); ok {
+				if info, ok := val.(NodeRuntimeInfo); ok {
+					v.Version = info.Version
+					v.OS = info.OS
+					v.Arch = info.Arch
+					v.Agents = info.Agents
+					ls := info.LastSeen
+					v.LastSeen = &ls
+					if !d.Revoked && now.Sub(info.LastSeen) < 90*time.Second {
+						v.Online = true
+					}
+				}
+			}
+			views = append(views, v)
 		}
 	}
-	if filtered == nil {
-		filtered = []devicestore.Device{}
+	if views == nil {
+		views = []OperatorDeviceView{}
 	}
-	writeJSON(w, 200, filtered)
+	writeJSON(w, 200, views)
+}
+
+func (s *Server) operatorRestartDevice(w http.ResponseWriter, r *http.Request) {
+	nodeID := r.PathValue("id")
+	p := operatorPrincipal(r)
+	if policy.Authorize(p, "task.submit", nodeID) != nil {
+		writeError(w, 403, "forbidden", "operation not permitted")
+		return
+	}
+	task, err := s.store.Submit(r.Context(), protocol.SubmitRequest{
+		NodeID:            nodeID,
+		Capability:        "agent.run",
+		CapabilityVersion: 1,
+		Input:             json.RawMessage(`{"prompt":"MESH_SYS:RESTART"}`),
+		TimeoutSeconds:    60,
+	})
+	if err != nil {
+		handleStoreError(w, err)
+		return
+	}
+	s.notifyNode(nodeID)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+		"task_id": task.ID,
+		"message": "Node restart command dispatched",
+	})
+}
+
+func (s *Server) operatorUpgradeDevice(w http.ResponseWriter, r *http.Request) {
+	nodeID := r.PathValue("id")
+	p := operatorPrincipal(r)
+	if policy.Authorize(p, "task.submit", nodeID) != nil {
+		writeError(w, 403, "forbidden", "operation not permitted")
+		return
+	}
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	downloadURL := fmt.Sprintf("%s://%s/download/mesh", scheme, r.Host)
+	inputData, _ := json.Marshal(map[string]string{
+		"prompt": fmt.Sprintf("MESH_SYS:UPGRADE %s", downloadURL),
+	})
+	task, err := s.store.Submit(r.Context(), protocol.SubmitRequest{
+		NodeID:            nodeID,
+		Capability:        "agent.run",
+		CapabilityVersion: 1,
+		Input:             json.RawMessage(inputData),
+		TimeoutSeconds:    120,
+	})
+	if err != nil {
+		handleStoreError(w, err)
+		return
+	}
+	s.notifyNode(nodeID)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+		"task_id": task.ID,
+		"message": "Node upgrade command dispatched",
+	})
 }

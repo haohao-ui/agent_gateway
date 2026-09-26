@@ -148,6 +148,7 @@ func serveGateway(ctx context.Context, opts gatewayOptions, onReady func(gateway
 		httpServer   *http.Server
 	)
 	if opts.HTTPAddr != "" {
+		api.SetAllowPlainHTTP(true)
 		var err error
 		httpListener, err = net.Listen("tcp", opts.HTTPAddr)
 		if err != nil {

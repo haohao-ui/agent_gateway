@@ -51,8 +51,20 @@ func (e *gatewayError) Unwrap() error { return e.kind }
 
 // GatewayClient talks to one gateway over HTTP/2 with the node's certificate.
 type GatewayClient struct {
-	base *url.URL
-	http *http.Client
+	base    *url.URL
+	http    *http.Client
+	version string
+	osName  string
+	arch    string
+	agents  []protocol.AgentSoftware
+}
+
+// SetMetadata updates the node system and agent tools metadata sent during heartbeats/claims.
+func (c *GatewayClient) SetMetadata(version, osName, arch string, agents []protocol.AgentSoftware) {
+	c.version = version
+	c.osName = osName
+	c.arch = arch
+	c.agents = agents
 }
 
 // NewGatewayClient builds an mTLS client. The certificate is the node identity:
@@ -103,7 +115,14 @@ func (c *GatewayClient) Claim(ctx context.Context, leaseSeconds int) (*protocol.
 	defer cancel()
 
 	var lease protocol.Lease
-	status, err := c.do(ctx, http.MethodPost, "/v1/tasks/claim", protocol.ClaimRequest{LeaseDurationSeconds: leaseSeconds}, &lease, http.StatusOK, http.StatusNoContent)
+	claimReq := protocol.ClaimRequest{
+		LeaseDurationSeconds: leaseSeconds,
+		NodeVersion:          c.version,
+		OS:                   c.osName,
+		Arch:                 c.arch,
+		Agents:               c.agents,
+	}
+	status, err := c.do(ctx, http.MethodPost, "/v1/tasks/claim", claimReq, &lease, http.StatusOK, http.StatusNoContent)
 	if err != nil {
 		return nil, err
 	}

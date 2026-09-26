@@ -9,6 +9,9 @@ const (
 	// CurrentProtocolVersion represents the wire envelope protocol version.
 	CurrentProtocolVersion = 1
 
+	// NodeSoftwareVersion is the current build version of mesh node executable.
+	NodeSoftwareVersion = "0.1.0"
+
 	// Event Types for real-time streaming
 	EventTypeStdout        = "stdout"
 	EventTypeStderr        = "stderr"
@@ -39,9 +42,21 @@ type PairResponse struct {
 	ServerVersion int    `json:"server_version"`
 }
 
+// AgentSoftware describes a detected AI application, runtime, or CLI tool on the node host.
+type AgentSoftware struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Kind     string `json:"kind"` // "cli" or "gui"
+	Runnable bool   `json:"runnable"`
+}
+
 // ClaimRequest is sent by a node over mTLS to pull a queued task.
 type ClaimRequest struct {
-	LeaseDurationSeconds int `json:"lease_duration_seconds"`
+	LeaseDurationSeconds int             `json:"lease_duration_seconds"`
+	NodeVersion          string          `json:"node_version,omitempty"`
+	OS                   string          `json:"os,omitempty"`
+	Arch                 string          `json:"arch,omitempty"`
+	Agents               []AgentSoftware `json:"agents,omitempty"`
 }
 
 // RenewRequest extends a task lease while execution is ongoing.

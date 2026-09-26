@@ -6,4 +6,5 @@ dist/
 *.sqlite-wal
 *.test
 coverage.out
-.DS_Store
+/mesh
+*.exe

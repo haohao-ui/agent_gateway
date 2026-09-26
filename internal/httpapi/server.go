@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
@@ -78,15 +79,28 @@ type Server struct {
 	doctorFunc DoctorFunc
 	mcpHandler http.Handler
 
-	adminPassword string
-	adminToken    string
+	allowPlainHTTP bool
+	adminPassword  string
+	adminToken     string
 	mcpSessions   sync.Map // sessionID (string) -> expiry time (time.Time)
+	nodeRuntime   sync.Map // nodeID (string) -> NodeRuntimeInfo
 
 	// pairLimiter bounds unauthenticated /v1/pair attempts per client address.
 	pairLimiter *pairLimiter
 
 	waitersMu sync.Mutex
 	waiters   map[string][]chan struct{} // nodeID -> slice of wakeup channels
+}
+
+// NodeRuntimeInfo tracks real-time heartbeat, software version and detected agent capabilities.
+type NodeRuntimeInfo struct {
+	NodeID   string                   `json:"node_id"`
+	Version  string                   `json:"version"`
+	OS       string                   `json:"os"`
+	Arch     string                   `json:"arch"`
+	Agents   []protocol.AgentSoftware `json:"agents"`
+	LastSeen time.Time                `json:"last_seen"`
+	Online   bool                     `json:"online"`
 }
 
 // NewServer initializes an HTTP/2 API handler with taskstore and identity CA.
@@ -109,6 +123,11 @@ func NewServer(store *taskstore.Store, ca *identity.CA) *Server {
 func (s *Server) SetAdminCredentials(password, token string) {
 	s.adminPassword = password
 	s.adminToken = token
+}
+
+// SetAllowPlainHTTP controls whether operator endpoints can be accessed over unencrypted HTTP (e.g. via --http-addr).
+func (s *Server) SetAllowPlainHTTP(allow bool) {
+	s.allowPlainHTTP = allow
 }
 
 // SetDataDir sets the gateway data directory path for diagnostics and reporting.
@@ -144,6 +163,19 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /api/public/status", s.handlePublicStatus)
 	s.mux.HandleFunc("GET /onboarding.md", s.handleOnboardingMD)
 	s.mux.HandleFunc("GET /ca.crt", s.handleDownloadCA)
+
+	// Download Center for node deployment and skills
+	s.mux.HandleFunc("GET /download/mesh", s.handleDownloadMesh)
+	s.mux.HandleFunc("GET /download/ca.crt", s.handleDownloadCA)
+	s.mux.HandleFunc("GET /download/install.sh", s.handleDownloadInstallScript)
+	s.mux.HandleFunc("GET /skills/agent-mesh/SKILL.md", s.handleDownloadSkill)
+	s.mux.HandleFunc("GET /download/skills/agent-mesh/SKILL.md", s.handleDownloadSkill)
+
+	// System Management (TLS configuration and restart)
+	s.mux.HandleFunc("GET /api/system/tls", s.handleGetTLSStatus)
+	s.mux.HandleFunc("POST /api/system/tls/upload", s.handleUploadTLS)
+	s.mux.HandleFunc("POST /api/system/tls/reset", s.handleResetTLS)
+	s.mux.HandleFunc("POST /api/system/restart", s.handleSystemRestart)
 
 	// Streamable HTTP / SSE MCP protocol endpoint
 	s.mux.HandleFunc("/mcp", s.handleMCP)
@@ -226,9 +258,28 @@ func (s *Server) Handler() http.Handler {
 
 // BuildTLSConfig returns a tls.Config with ALPN h2, server certificates, and mTLS verification.
 func (s *Server) BuildTLSConfig(hosts []string) (*tls.Config, error) {
-	serverCert, err := s.ca.GenerateServerCertificate(hosts)
+	var serverCert tls.Certificate
+	var err error
+
+	// Check if custom TLS certificate and key exist and are valid
+	certPath := s.customCertPath()
+	keyPath := s.customKeyPath()
+	if _, cErr := os.Stat(certPath); cErr == nil {
+		if _, kErr := os.Stat(keyPath); kErr == nil {
+			serverCert, err = tls.LoadX509KeyPair(certPath, keyPath)
+			if err != nil {
+				// Fallback to built-in CA if custom keypair loading fails
+				serverCert, err = s.ca.GenerateServerCertificate(hosts)
+			}
+		} else {
+			serverCert, err = s.ca.GenerateServerCertificate(hosts)
+		}
+	} else {
+		serverCert, err = s.ca.GenerateServerCertificate(hosts)
+	}
+
 	if err != nil {
-		return nil, fmt.Errorf("generate server certificate: %w", err)
+		return nil, fmt.Errorf("generate or load server certificate: %w", err)
 	}
 
 	return &tls.Config{
@@ -417,6 +468,29 @@ func (s *Server) handleClaim(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, credentialBodyLimit, &req) {
 		return
 	}
+
+	// Update node runtime heartbeat and detected agent tools
+	version := req.NodeVersion
+	if version == "" {
+		version = "0.1.0"
+	}
+	osName := req.OS
+	if osName == "" {
+		osName = "linux"
+	}
+	arch := req.Arch
+	if arch == "" {
+		arch = "amd64"
+	}
+	s.nodeRuntime.Store(nodeID, NodeRuntimeInfo{
+		NodeID:   nodeID,
+		Version:  version,
+		OS:       osName,
+		Arch:     arch,
+		Agents:   req.Agents,
+		LastSeen: time.Now().UTC(),
+		Online:   true,
+	})
 
 	leaseDuration := time.Duration(req.LeaseDurationSeconds) * time.Second
 	if leaseDuration <= 0 {

@@ -7,15 +7,12 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+
+	"agent-gateway/internal/protocol"
 )
 
-// AgentSoftware describes a detected AI application or CLI tool on the node host.
-type AgentSoftware struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Kind     string `json:"kind"` // "cli" or "gui"
-	Runnable bool   `json:"runnable"`
-}
+// AgentSoftware alias for protocol.AgentSoftware.
+type AgentSoftware = protocol.AgentSoftware
 
 var knownCLIs = map[string]string{
 	"claude":   "Claude Code",
@@ -25,6 +22,12 @@ var knownCLIs = map[string]string{
 	"aider":    "Aider",
 	"opencode": "OpenCode",
 	"cursor":   "Cursor CLI",
+	"python3":  "Python 3",
+	"node":     "Node.js",
+	"docker":   "Docker",
+	"git":      "Git",
+	"bash":     "Bash Shell",
+	"go":       "Go Runtime",
 }
 
 var knownDarwinApps = map[string]struct{ ID, Name string }{
@@ -47,7 +50,7 @@ func DiscoverInstalledAgents(configuredAdapters []string) []AgentSoftware {
 				ID:       cmd,
 				Name:     label,
 				Kind:     "cli",
-				Runnable: false,
+				Runnable: true,
 			}
 			continue
 		}
@@ -64,7 +67,7 @@ func DiscoverInstalledAgents(configuredAdapters []string) []AgentSoftware {
 					ID:       cmd,
 					Name:     label,
 					Kind:     "cli",
-					Runnable: false,
+					Runnable: true,
 				}
 				break
 			}

@@ -2,16 +2,21 @@ package node
 
 import (
 	"context"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"math/rand/v2"
+	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"agent-gateway/internal/protocol"
@@ -86,6 +91,12 @@ func New(cfg Config, dir string, log *slog.Logger) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
+	var configuredCaps []string
+	for _, c := range cfg.Capabilities {
+		configuredCaps = append(configuredCaps, c.Name)
+	}
+	discoveredAgents := DiscoverInstalledAgents(configuredCaps)
+	client.SetMetadata(protocol.NodeSoftwareVersion, runtime.GOOS, runtime.GOARCH, discoveredAgents)
 	journal, err := OpenJournal(filepath.Join(dir, journalFilename))
 	if err != nil {
 		return nil, err
@@ -260,6 +271,56 @@ func (n *Node) serve(ctx context.Context, lease *protocol.Lease) error {
 	if capErr != nil {
 		log.Warn("refusing the task", "reason", capErr)
 		return n.finish(ctx, lease, refusal(capErr), "")
+	}
+
+	trimmedInst := strings.TrimSpace(instructionText)
+	if strings.HasPrefix(trimmedInst, "MESH_SYS:RESTART") {
+		log.Info("received system restart command")
+		go func() {
+			time.Sleep(1 * time.Second)
+			execPath, err := os.Executable()
+			if err == nil && runtime.GOOS != "windows" {
+				_ = syscall.Exec(execPath, os.Args, os.Environ())
+			}
+			os.Exit(0)
+		}()
+		return n.finish(ctx, lease, protocol.Result{
+			State:    protocol.Succeeded,
+			Text:     "Node restart initiated successfully.",
+			ExitCode: 0,
+		}, "restart")
+	}
+
+	if strings.HasPrefix(trimmedInst, "MESH_SYS:UPGRADE") {
+		parts := strings.Fields(trimmedInst)
+		downloadURL := ""
+		if len(parts) >= 2 {
+			downloadURL = parts[1]
+		}
+		log.Info("received system upgrade command", "url", downloadURL)
+		err := n.performSelfUpgrade(ctx, downloadURL)
+		if err != nil {
+			log.Error("self-upgrade failed", "error", err)
+			return n.finish(ctx, lease, protocol.Result{
+				State:     protocol.Failed,
+				ErrorCode: "upgrade_failed",
+				Text:      "Self-upgrade failed: " + err.Error(),
+				ExitCode:  1,
+			}, "upgrade_failed")
+		}
+		go func() {
+			time.Sleep(1 * time.Second)
+			execPath, err := os.Executable()
+			if err == nil && runtime.GOOS != "windows" {
+				_ = syscall.Exec(execPath, os.Args, os.Environ())
+			}
+			os.Exit(0)
+		}()
+		return n.finish(ctx, lease, protocol.Result{
+			State:    protocol.Succeeded,
+			Text:     "Node binary upgraded successfully. Restarting...",
+			ExitCode: 0,
+		}, "upgraded")
 	}
 
 	log.Info("executing task")
@@ -685,3 +746,53 @@ func checkCertificateValidity(certPEM []byte, now time.Time) error {
 	}
 	return nil
 }
+
+func (n *Node) performSelfUpgrade(ctx context.Context, downloadURL string) error {
+	if downloadURL == "" {
+		downloadURL = n.cfg.ServerURL + "/download/mesh"
+	}
+	execPath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("locate executable: %w", err)
+	}
+
+	client := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+		Timeout: 60 * time.Second,
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", downloadURL, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("download mesh: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("download mesh returned status: %d", resp.StatusCode)
+	}
+
+	tmpFile := execPath + ".upgrade.tmp"
+	f, err := os.OpenFile(tmpFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
+	if err != nil {
+		return fmt.Errorf("create upgrade tmp file: %w", err)
+	}
+	defer func() {
+		_ = f.Close()
+		_ = os.Remove(tmpFile)
+	}()
+
+	if _, err := io.Copy(f, resp.Body); err != nil {
+		return fmt.Errorf("write upgrade file: %w", err)
+	}
+	_ = f.Close()
+
+	if err := os.Rename(tmpFile, execPath); err != nil {
+		return fmt.Errorf("replace executable: %w", err)
+	}
+	return nil
+}
+

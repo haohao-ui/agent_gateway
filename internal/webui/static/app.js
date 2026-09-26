@@ -290,23 +290,45 @@
 
     nodesTableBody.innerHTML = nodes.map(n => {
       const isRevoked = n.revoked;
-      const statusBadge = isRevoked ? '<span class="badge badge-revoked">REVOKED</span>' : '<span class="badge badge-active">ACTIVE</span>';
-      const fp = n.fingerprint ? n.fingerprint.slice(0, 16) + '...' : '-';
-      const expiresAt = n.cert_expires_at ? new Date(n.cert_expires_at).toLocaleDateString() : '-';
-      const registeredAt = n.registered_at ? new Date(n.registered_at).toLocaleString() : '-';
+      const isOnline = n.online;
+      let statusBadge = '<span class="badge" style="background:#4b5563;color:#9ca3af;">OFFLINE</span>';
+      if (isRevoked) {
+        statusBadge = '<span class="badge badge-revoked">REVOKED</span>';
+      } else if (isOnline) {
+        statusBadge = '<span class="badge badge-active" style="background:rgba(16,185,129,0.2);color:#34d399;">ONLINE</span>';
+      }
 
-      let revokeBtn = isRevoked
-        ? `<button class="btn btn-secondary btn-sm" disabled>已撤销</button>`
-        : `<button class="btn btn-danger btn-sm revoke-node-btn" data-id="${n.node_id}">撤销凭证</button>`;
+      const versionStr = n.version ? `<code>v${escapeHtml(n.version)}</code>` : '<span style="color:var(--text-muted)">-</span>';
+      const sysStr = (n.os && n.arch) ? `<span style="font-size:11px;color:var(--text-muted);">${escapeHtml(n.os)}/${escapeHtml(n.arch)}</span>` : '';
+
+      let agentsHtml = '<span style="font-size:11px;color:var(--text-muted);">未上报</span>';
+      if (Array.isArray(n.agents) && n.agents.length > 0) {
+        agentsHtml = n.agents.map(a => {
+          return `<span class="badge" style="font-size:10px;margin:2px;background:rgba(56,189,248,0.15);color:var(--primary);border:1px solid rgba(56,189,248,0.3);">${escapeHtml(a.id)}</span>`;
+        }).join('');
+      }
+
+      const expiresAt = n.cert_expires_at ? new Date(n.cert_expires_at).toLocaleDateString() : '-';
+
+      let actions = '';
+      if (!isRevoked && isOnline) {
+        actions += `<button class="btn btn-secondary btn-sm restart-node-btn" data-id="${n.node_id}" style="margin-right:4px;">🔄 重启</button>`;
+        actions += `<button class="btn btn-primary btn-sm upgrade-node-btn" data-id="${n.node_id}" style="margin-right:4px;">🚀 更新</button>`;
+      }
+      if (!isRevoked) {
+        actions += `<button class="btn btn-danger btn-sm revoke-node-btn" data-id="${n.node_id}">撤销</button>`;
+      } else {
+        actions += `<button class="btn btn-secondary btn-sm" disabled>已撤销</button>`;
+      }
 
       return `
         <tr>
           <td><strong>${escapeHtml(n.node_id)}</strong></td>
-          <td><code>${escapeHtml(fp)}</code></td>
-          <td>${expiresAt}</td>
           <td>${statusBadge}</td>
-          <td>${registeredAt}</td>
-          <td>${revokeBtn}</td>
+          <td><div>${versionStr}</div><div>${sysStr}</div></td>
+          <td style="max-width:240px;">${agentsHtml}</td>
+          <td>${expiresAt}</td>
+          <td>${actions}</td>
         </tr>
       `;
     }).join('');
@@ -314,6 +336,52 @@
     nodesTableBody.querySelectorAll('.revoke-node-btn').forEach(btn => {
       btn.addEventListener('click', () => revokeNode(btn.getAttribute('data-id')));
     });
+    nodesTableBody.querySelectorAll('.restart-node-btn').forEach(btn => {
+      btn.addEventListener('click', () => restartNode(btn.getAttribute('data-id')));
+    });
+    nodesTableBody.querySelectorAll('.upgrade-node-btn').forEach(btn => {
+      btn.addEventListener('click', () => upgradeNode(btn.getAttribute('data-id')));
+    });
+  }
+
+  async function restartNode(nodeId) {
+    if (!confirm(`确定要远程重启节点 [${nodeId}] 吗？`)) return;
+    try {
+      const res = await fetch(`/v1/operator/devices/${nodeId}/restart`, {
+        method: 'POST',
+        headers: authHeaders(),
+        credentials: 'same-origin'
+      });
+      const data = await res.json();
+      if (res.ok) {
+        alert(`已下发重启命令 (Task ID: ${data.task_id})`);
+        fetchTasks();
+      } else {
+        alert(`重启失败: ${data.message || res.statusText}`);
+      }
+    } catch (e) {
+      alert(`请求异常: ${e.message}`);
+    }
+  }
+
+  async function upgradeNode(nodeId) {
+    if (!confirm(`确定让节点 [${nodeId}] 从网关自动下载最新可执行程序并升级重启吗？`)) return;
+    try {
+      const res = await fetch(`/v1/operator/devices/${nodeId}/upgrade`, {
+        method: 'POST',
+        headers: authHeaders(),
+        credentials: 'same-origin'
+      });
+      const data = await res.json();
+      if (res.ok) {
+        alert(`已下发自动更新命令 (Task ID: ${data.task_id})`);
+        fetchTasks();
+      } else {
+        alert(`更新失败: ${data.message || res.statusText}`);
+      }
+    } catch (e) {
+      alert(`请求异常: ${e.message}`);
+    }
   }
 
   // 4. Modals & Actions
@@ -687,7 +755,134 @@ ${JSON.stringify(mcpJson, null, 2)}
     fetchTasks();
     fetchNodes();
     updateMCPDocs();
+    loadTLSStatus();
   });
+
+  // 5. System Settings & TLS
+  async function loadTLSStatus() {
+    try {
+      const res = await fetch('/api/system/tls', { headers: authHeaders(), credentials: 'same-origin' });
+      if (!res.ok) return;
+      const data = await res.json();
+      const badge = document.getElementById('tls-type-badge');
+      const details = document.getElementById('tls-cert-details');
+      if (badge && details) {
+        if (data.custom_enabled) {
+          badge.textContent = '自定义受信证书 (Custom TLS)';
+          badge.style.background = 'rgba(16, 185, 129, 0.2)';
+          badge.style.color = '#34d399';
+          details.innerHTML = `域名(CN): <strong>${escapeHtml(data.subject || '-')}</strong> | 颁发者: ${escapeHtml(data.issuer || '-')} | 到期时间: ${data.expires_at || '-'}`;
+        } else {
+          badge.textContent = '内置自签 CA 证书 (Self-Signed)';
+          badge.style.background = 'rgba(56, 189, 248, 0.2)';
+          badge.style.color = 'var(--primary)';
+          details.textContent = '当前正在使用网关启动时自动生成的内置 CA 根证书。';
+        }
+      }
+    } catch (e) {
+      console.error('Failed to load TLS status:', e);
+    }
+  }
+
+  const uploadTlsForm = document.getElementById('upload-tls-form');
+  if (uploadTlsForm) {
+    uploadTlsForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const certFile = document.getElementById('tls-cert-file').files[0];
+      const keyFile = document.getElementById('tls-key-file').files[0];
+      if (!certFile || !keyFile) return;
+
+      const fd = new FormData();
+      fd.append('cert', certFile);
+      fd.append('key', keyFile);
+
+      const msgEl = document.getElementById('upload-tls-msg');
+      msgEl.className = 'alert';
+      msgEl.textContent = '正在校验并上传证书...';
+      msgEl.classList.remove('hidden');
+
+      try {
+        const res = await fetch('/api/system/tls/upload', {
+          method: 'POST',
+          headers: authHeaders(),
+          body: fd,
+          credentials: 'same-origin'
+        });
+        const data = await res.json();
+        if (res.ok) {
+          msgEl.className = 'alert alert-success';
+          msgEl.textContent = data.message || '证书上传成功！请点击下方按钮重启网关生效。';
+          loadTLSStatus();
+        } else {
+          msgEl.className = 'alert alert-danger';
+          msgEl.textContent = '上传失败: ' + (data.message || res.statusText);
+        }
+      } catch (err) {
+        msgEl.className = 'alert alert-danger';
+        msgEl.textContent = '网络错误: ' + err.message;
+      }
+    });
+  }
+
+  const resetTlsBtn = document.getElementById('reset-tls-btn');
+  if (resetTlsBtn) {
+    resetTlsBtn.addEventListener('click', async () => {
+      if (!confirm('确定要清除自定义证书并恢复为内置 CA 吗？')) return;
+      try {
+        const res = await fetch('/api/system/tls/reset', {
+          method: 'POST',
+          headers: authHeaders(),
+          credentials: 'same-origin'
+        });
+        const data = await res.json();
+        alert(data.message || '已恢复默认证书，重启网关后生效。');
+        loadTLSStatus();
+      } catch (e) {
+        alert('重置异常: ' + e.message);
+      }
+    });
+  }
+
+  const restartGatewayBtn = document.getElementById('restart-gateway-btn');
+  if (restartGatewayBtn) {
+    restartGatewayBtn.addEventListener('click', async () => {
+      if (!confirm('⚠️ 确定要立即重启 Agent Gateway 网关进程吗？\n重启期间网络会短暂中断 1~2 秒。')) return;
+      const msgEl = document.getElementById('restart-gateway-msg');
+      msgEl.className = 'alert alert-warning';
+      msgEl.textContent = '正在重启网关服务，将在 3 秒后自动重新连接...';
+      msgEl.classList.remove('hidden');
+
+      try {
+        await fetch('/api/system/restart', {
+          method: 'POST',
+          headers: authHeaders(),
+          credentials: 'same-origin'
+        });
+      } catch (e) {
+        // network will disconnect immediately on restart, which is expected
+      }
+
+      let count = 3;
+      const interval = setInterval(() => {
+        count--;
+        if (count > 0) {
+          msgEl.textContent = `网关重启中，倒计时 ${count} 秒后自动刷新...`;
+        } else {
+          clearInterval(interval);
+          window.location.reload();
+        }
+      }, 1000);
+    });
+  }
+
+  // Update quick install command with current origin
+  function updateQuickInstall() {
+    const origin = window.location.origin;
+    const quickInstallEl = document.getElementById('node-quick-install-cmd');
+    if (quickInstallEl) {
+      quickInstallEl.textContent = `curl -fsSL ${origin}/download/install.sh | bash -s -- <配对邀请码>`;
+    }
+  }
 
   // Initialization
   async function init() {
@@ -703,6 +898,8 @@ ${JSON.stringify(mcpJson, null, 2)}
         updateMetrics();
         await fetchTasks();
         connectSSE();
+        loadTLSStatus();
+        updateQuickInstall();
         return;
       }
     } catch (e) {}
