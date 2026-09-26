@@ -25,6 +25,7 @@ import (
 	"sync"
 	"time"
 
+	"agent-gateway/internal/artifact"
 	"agent-gateway/internal/devicestore"
 	"agent-gateway/internal/events"
 	"agent-gateway/internal/identity"
@@ -72,6 +73,7 @@ type Server struct {
 	devices    *devicestore.Store
 	policies   *policy.Store
 	hub        *events.Hub
+	artifacts  *artifact.Store
 	dataDir    string
 	doctorFunc DoctorFunc
 
@@ -94,6 +96,7 @@ func NewServer(store *taskstore.Store, ca *identity.CA) *Server {
 	}
 	s.registerRoutes()
 	s.registerOperatorRoutes()
+	s.registerArtifactRoutes()
 	return s
 }
 
