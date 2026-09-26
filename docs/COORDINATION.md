@@ -128,5 +128,15 @@ Orca 不可用：`Unable to determine Orca.app path from symlink: /usr/local/bin
   - 验证结果：全包通过单元测试与 `-race` 竞态检测、`gofmt` 干净、`go vet` 零告警、Linux/Windows 交叉编译成功；
   - 交付验收报告 `docs/reports/task-reconcile.md`。
 
+### M2 收尾：命令行节点与设备列表查询完成（2026-09-26）
+
+- 主线合入 commit `162f5d2`（分支 `feat/device-list`）：
+  - `internal/devicestore`：新增 `Device` 实体与 `List(ctx)` 只读查询方法，返回已注册节点的指纹、过期时间与撤销标记；
+  - `internal/httpapi`：挂载 `GET /v1/operator/devices` 端点，基于 `policy.Authorize` 自动过滤操作员授权节点；
+  - `cmd/mesh`：新增 `mesh device list` 及别名 `mesh node list`；
+  - 验证结果：全仓单元测试与 `-race` 竞态检测全部通过、`gofmt` 规范、`go vet` 零告警、跨平台编译成功；
+  - 交付验收报告 `docs/reports/device-list.md`。
+
+
 
 
