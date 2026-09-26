@@ -146,6 +146,16 @@ Orca 不可用：`Unable to determine Orca.app path from symlink: /usr/local/bin
   - 验证结果：全包单元测试与 `-race` 竞态检测全部通过、`gofmt` 规范、`go vet` 零告警、Linux/Windows 交叉编译成功；
   - 交付验收报告 `docs/reports/doctor.md`。
 
+### M3-A：内嵌 Web 管理控制台与实时 SSE 事件流完成（2026-09-26）
+
+- 主线合入（分支 `feat/webui-sse`）：
+  - `internal/events`：实现支持高并发、有界缓冲与慢客户端丢弃隔离的事件广播总线 `Hub`；
+  - `internal/webui`：利用标准库 `embed.FS` 内嵌现代暗黑极客风格单页管理仪表盘（大盘统计卡片、任务表格、节点列表、任务详情与实时终端流、Unknown 任务对账模态框与系统诊断）；
+  - `internal/httpapi`：挂载 `GET /`、`GET /ui/*`、`GET /v1/events/stream`（SSE 长连接，含 15 秒心跳保活）以及 `GET /v1/doctor` 自检端点；在任务提交、领取、启动、续租、完成、取消、事件流等全生命周期自动广播事件；
+  - 验证结果：全包单元测试与 `-race` 竞态检测全数通过、`gofmt` 规范、`go vet` 零告警、Linux/Windows 交叉编译成功；
+  - 交付验收报告 `docs/reports/webui-sse.md`。
+
+
 
 
 
