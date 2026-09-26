@@ -52,6 +52,7 @@ type gatewayInfo struct {
 	Invitations     []protocol.PairInvitation
 	DBPath          string
 	ProtocolVersion int
+	OperatorToken   string
 }
 
 // serveGateway runs the gateway until ctx is cancelled, then shuts it down
@@ -155,6 +156,7 @@ func serveGateway(ctx context.Context, opts gatewayOptions, onReady func(gateway
 		Fingerprint:     ca.Fingerprint(),
 		DBPath:          dbPath,
 		ProtocolVersion: protocol.CurrentProtocolVersion,
+		OperatorToken:   ensureAdminToken(ctx, opts.DataDir, policies, opts.Log),
 	}
 	for i := 0; i < opts.Invitations; i++ {
 		invitation, err := ca.GenerateInvitation(opts.InviteTTL)
@@ -230,6 +232,28 @@ func sweepLeases(ctx context.Context, store *taskstore.Store, every time.Duratio
 			}
 		}
 	}
+}
+
+// ensureAdminToken loads or creates a persistent operator credential for web dashboard management.
+func ensureAdminToken(ctx context.Context, dataDir string, policies *policy.Store, log *slog.Logger) string {
+	tokenPath := filepath.Join(dataDir, "admin.token")
+	if data, err := os.ReadFile(tokenPath); err == nil {
+		tok := strings.TrimSpace(string(data))
+		if tok != "" {
+			if _, err := policies.Authenticate(ctx, tok); err == nil {
+				return tok
+			}
+		}
+	}
+	_, tok, err := policies.Issue(ctx, policy.Admin, nil, time.Now().Add(365*24*time.Hour))
+	if err != nil {
+		log.Warn("failed to issue default admin token", "error", err)
+		return ""
+	}
+	if err := os.WriteFile(tokenPath, []byte(tok+"\n"), 0600); err != nil {
+		log.Warn("failed to save admin token file", "error", err)
+	}
+	return tok
 }
 
 // certHostWarning reports the case that leaves an operator with an opaque
@@ -321,6 +345,10 @@ func runServer(ctx context.Context, args []string) error {
 		}
 		if pending, err := identity.PendingInvitations(*dataDir); err == nil && pending > 0 {
 			fmt.Printf("pending:     %d invitation(s) from earlier runs are still usable\n", pending)
+		}
+		if info.OperatorToken != "" {
+			fmt.Printf("operator:    %s\n", info.OperatorToken)
+			fmt.Printf("web dashboard: %s/ui/?token=%s\n", reachableAddr(info.Addr, hostList), info.OperatorToken)
 		}
 		if warning := certHostWarning(address, hostList); warning != "" {
 			fmt.Printf("\nwarning:     %s\n", warning)
