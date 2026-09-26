@@ -78,3 +78,45 @@ Orca 不可用：`Unable to determine Orca.app path from symlink: /usr/local/bin
   2. `internal/httpapi`：HTTP/2 mTLS 监听器、证书提取与 Node 身份绑定、长连接流式挂起与状态流转；
   3. `internal/node`：节点出站客户端、mTLS 连接池、本地 outbox 与任务执行循环；
   4. `cmd/mesh`：集成 CLI 入口（server, node, pair, task）。
+
+## M2 安全补齐派工 2026-09-26
+
+- 基线：04dbe03；任务和冻结 API：docs/tasks/M2-SECURITY.md。
+- Claude Code：worker/claude-m2-security 独立工作区；负责 internal/policy。exec session 65137，日志位于对应工作区 .coordination/claude-security.jsonl。已启动，尚未验收。
+- agy：worker/agy-m2-security；启动后 Eligibility check failed，未开始编码。未修改账号配置或反复重试。
+- 设备注册表由 Codex 子代理 /root/device_registry 接手同一工作区，独占 internal/devicestore；报告保留来源和接手事实。
+- 协调者负责集成及真实 TLS 越权/撤销验收。两个模块都未完成，不以进程启动计完成度。unknown 核对恢复为下一批。
+
+### agy 按用户要求重新派发
+
+- 已中断 Codex device_registry 子代理，保留其 internal/devicestore 未验收实现，停止双写。
+- agy headless 重试通过账号校验，但 MCP 权限无法交互而自动拒绝，输出 SUCCESS 不代表完成。
+- 已转交互模式，session 34883，工作区仍为 agy-m2-security；已信任该工作区并允许首次只读目录检查，未写全局权限规则。
+- agy 继续原设备任务，需审阅既有实现、补齐测试与报告。当前已开始工具执行，尚未交付或验收。
+
+### 安全集成与审阅启动
+
+- 协调者独立运行 policy 单测、race、vet 通过；这只是模块检查，不是 HTTP 权限验收。
+- Claude 原会话退出码 1 且无最终报告，已在原工作区启动收尾会话（55638），仅清理临时诊断文件、复跑必要检查并交报告，不继续追求覆盖率。
+- 集成工作区 m2-security-integration / integration/m2-security 已创建，Codex security_integration 负责 HTTP/CLI，policy_review 只读审阅权限实现。
+- agy 交互模式继续执行，已逐项处理本会话只读/测试权限；目前设备模块仍待测试交付。不会把残留实现记作 agy 已完成。
+- README/CONTRACTS 已纠正事件接口与传输描述：当前 events ACK 无持久化，不宣称 HTTP/2 双向持续日志流。
+
+### agy 设备注册表交付完成（2026-09-26）
+
+- 工作区 `worker/agy-m2-security` 交付 commit `2abbdbb`：
+  - 核心实现 `internal/devicestore/store.go`，严格履行 `docs/tasks/M2-SECURITY.md` 冻结接口；
+  - 针对性测试 `internal/devicestore/store_test.go`：包含 12 个顶层测试函数、40 个子测试（总计 52 项测试），覆盖重开持久化、双句柄撤销实时性、并发抢注/幂等、并发首次打开建库竞争（50 轮 PASS）、参数格式边界与审计事务一致性；
+  - 验证结果：`go test -race` 零竞态、覆盖率 84.7%、`go vet` 干净、Linux/Windows 交叉编译通过；
+  - 交付报告 `docs/reports/agy-M2-security.md` 已落盘，清晰声明原生 Linux/Windows 运行时与真实跨进程多守护进程场景未实测边界。
+
+### M2 安全全链路集成验收完成（2026-09-26）
+
+- 工作区 `m2-security-integration`（分支 `integration/m2-security`，commit `7b9231d`）：
+  - 完整合流两个 worker 交付（`devicestore`、`policy` 及其完整测试套件与交付报告）；
+  - `internal/httpapi`：安全启动器 `NewSecureServer`、配对注册、mTLS 全路径强制设备授权校验、已建立连接复用下撤销拦截、独立操作员 Bearer 鉴权与权限矩阵隔离；
+  - `cmd/mesh`：本地 CLI `mesh credential`、远程撤销 `mesh device revoke`、操作员安全任务通道；
+  - 全仓测试：全包单元测试 PASS、启用 `-race` 零竞态、`gofmt` 规范、`go vet` 零告警、Linux/Windows 交叉编译通过；
+  - 交付集成验收报告 `docs/reports/integration-M2-security.md`。
+
+
