@@ -64,17 +64,25 @@ func (s *Server) requireOperator(next http.HandlerFunc) http.HandlerFunc {
 			writeError(w, 401, "unauthorized", "HTTPS operator authentication required")
 			return
 		}
+		token := ""
 		headers := r.Header.Values("Authorization")
-		if len(headers) != 1 {
+		if len(headers) == 1 {
+			fields := strings.Fields(headers[0])
+			if len(fields) == 2 && strings.EqualFold(fields[0], "Bearer") && len(fields[1]) <= 1024 {
+				token = fields[1]
+			}
+		}
+		if token == "" {
+			qToken := r.URL.Query().Get("token")
+			if qToken != "" && len(qToken) <= 1024 {
+				token = qToken
+			}
+		}
+		if token == "" {
 			writeError(w, 401, "unauthorized", "operator credential required")
 			return
 		}
-		fields := strings.Fields(headers[0])
-		if len(fields) != 2 || !strings.EqualFold(fields[0], "Bearer") || len(fields[1]) > 1024 {
-			writeError(w, 401, "unauthorized", "invalid operator credential")
-			return
-		}
-		p, err := s.policies.Authenticate(r.Context(), fields[1])
+		p, err := s.policies.Authenticate(r.Context(), token)
 		if err != nil {
 			writeError(w, 401, "unauthorized", "invalid operator credential")
 			return

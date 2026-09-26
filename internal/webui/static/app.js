@@ -24,13 +24,74 @@
   const metricFailed = document.getElementById('metric-failed');
   const metricUnknown = document.getElementById('metric-unknown');
 
-  // Modals
+  // Modals & Token
   const taskModal = document.getElementById('task-modal');
   const reconcileModal = document.getElementById('reconcile-modal');
+  const tokenModal = document.getElementById('token-modal');
+  const tokenBtn = document.getElementById('token-btn');
+  const tokenInput = document.getElementById('operator-token-input');
+  const closeTokenModal = document.getElementById('close-token-modal');
+  const saveTokenBtn = document.getElementById('save-token-btn');
+  const clearTokenBtn = document.getElementById('clear-token-btn');
+
   const submitForm = document.getElementById('submit-task-form');
   const submitMessage = document.getElementById('submit-message');
   const runDoctorBtn = document.getElementById('run-doctor-btn');
   const doctorResults = document.getElementById('doctor-results');
+
+  // Token management
+  const urlParams = new URLSearchParams(window.location.search);
+  if (urlParams.has('token')) {
+    localStorage.setItem('agent_gateway_token', urlParams.get('token'));
+    window.history.replaceState({}, document.title, window.location.pathname);
+  }
+  let operatorToken = localStorage.getItem('agent_gateway_token') || '';
+
+  function authHeaders(extra = {}) {
+    const headers = { 'Content-Type': 'application/json', ...extra };
+    if (operatorToken) {
+      headers['Authorization'] = `Bearer ${operatorToken}`;
+    }
+    return headers;
+  }
+
+  function showTokenModal() {
+    if (tokenInput) tokenInput.value = operatorToken;
+    if (tokenModal) tokenModal.classList.add('active');
+  }
+
+  function hideTokenModal() {
+    if (tokenModal) tokenModal.classList.remove('active');
+  }
+
+  if (tokenBtn) tokenBtn.addEventListener('click', showTokenModal);
+  if (closeTokenModal) closeTokenModal.addEventListener('click', hideTokenModal);
+  if (saveTokenBtn) {
+    saveTokenBtn.addEventListener('click', () => {
+      const val = tokenInput.value.trim();
+      operatorToken = val;
+      if (val) {
+        localStorage.setItem('agent_gateway_token', val);
+      } else {
+        localStorage.removeItem('agent_gateway_token');
+      }
+      hideTokenModal();
+      fetchTasks();
+      fetchNodes();
+      connectSSE();
+    });
+  }
+  if (clearTokenBtn) {
+    clearTokenBtn.addEventListener('click', () => {
+      operatorToken = '';
+      if (tokenInput) tokenInput.value = '';
+      localStorage.removeItem('agent_gateway_token');
+      hideTokenModal();
+      fetchTasks();
+      fetchNodes();
+      connectSSE();
+    });
+  }
 
   // 1. Navigation Tabs
   document.querySelectorAll('.tab-btn').forEach(btn => {
@@ -51,11 +112,14 @@
   // 2. Fetch Tasks & Nodes
   async function fetchTasks() {
     try {
-      const res = await fetch('/v1/operator/tasks');
+      const res = await fetch('/v1/operator/tasks', { headers: authHeaders() });
       if (res.ok) {
         tasks = await res.json();
         renderTasks();
         updateMetrics();
+      } else if (res.status === 401) {
+        console.warn('Operator authentication required');
+        if (!operatorToken) showTokenModal();
       } else {
         console.error('Failed to load tasks:', res.statusText);
       }
@@ -66,11 +130,14 @@
 
   async function fetchNodes() {
     try {
-      const res = await fetch('/v1/operator/devices');
+      const res = await fetch('/v1/operator/devices', { headers: authHeaders() });
       if (res.ok) {
         nodes = await res.json();
         renderNodes();
         updateMetrics();
+      } else if (res.status === 401) {
+        console.warn('Operator authentication required');
+        if (!operatorToken) showTokenModal();
       } else {
         console.error('Failed to load nodes:', res.statusText);
       }
@@ -267,7 +334,7 @@
 
       const res = await fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders(),
         body: JSON.stringify(body),
       });
 
@@ -286,7 +353,10 @@
   async function cancelTask(taskId) {
     if (!confirm(`确认取消任务 ${taskId} 吗？`)) return;
     try {
-      const res = await fetch(`/v1/tasks/${taskId}/cancel`, { method: 'POST' });
+      const res = await fetch(`/v1/operator/tasks/${taskId}/cancel`, {
+        method: 'POST',
+        headers: authHeaders()
+      });
       if (res.ok) {
         await fetchTasks();
       } else {
@@ -301,7 +371,10 @@
   async function revokeNode(nodeId) {
     if (!confirm(`确定要撤销节点 ${nodeId} 的访问凭证吗？此操作立即生效。`)) return;
     try {
-      const res = await fetch(`/v1/operator/devices/${nodeId}/revoke`, { method: 'POST' });
+      const res = await fetch(`/v1/operator/devices/${nodeId}/revoke`, {
+        method: 'POST',
+        headers: authHeaders()
+      });
       if (res.ok) {
         await fetchNodes();
       } else {
@@ -331,9 +404,9 @@
     }
 
     try {
-      const res = await fetch('/v1/tasks/submit', {
+      const res = await fetch('/v1/operator/tasks/submit', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders(),
         body: JSON.stringify({
           node_id: nodeId,
           capability: capability,
@@ -364,7 +437,7 @@
   runDoctorBtn.addEventListener('click', async () => {
     doctorResults.innerHTML = '<div class="empty-state">正在进行系统环境与组件自检...</div>';
     try {
-      const res = await fetch('/v1/doctor');
+      const res = await fetch('/v1/doctor', { headers: authHeaders() });
       if (res.ok) {
         const rep = await res.json();
         renderDoctorResults(rep);
@@ -409,8 +482,18 @@
   }
 
   // 7. Server-Sent Events (SSE) Stream
+  let activeSSE = null;
   function connectSSE() {
-    const sse = new EventSource('/v1/events/stream');
+    if (activeSSE) {
+      try { activeSSE.close(); } catch (e) {}
+      activeSSE = null;
+    }
+
+    const sseUrl = operatorToken
+      ? `/v1/events/stream?token=${encodeURIComponent(operatorToken)}`
+      : '/v1/events/stream';
+    const sse = new EventSource(sseUrl);
+    activeSSE = sse;
 
     sse.onopen = () => {
       statusIndicator.className = 'status-indicator online';
