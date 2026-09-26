@@ -86,6 +86,7 @@
       dashboardView.style.display = 'block';
     }
     if (userBadge) userBadge.textContent = '👤 admin';
+    updateMCPDocs();
   }
 
   if (loginForm) {
@@ -599,12 +600,102 @@
       .replace(/"/g, '&quot;');
   }
 
+  // MCP Configuration & Collaboration Docs
+  function updateMCPDocs() {
+    const origin = window.location.origin;
+    const mcpUrl = `${origin}/mcp`;
+    const token = operatorToken || localStorage.getItem('agent_gateway_token') || '';
+
+    const elEndpoint = document.getElementById('mcp-endpoint-url');
+    const elToken = document.getElementById('mcp-token-val');
+    const elDoubaoUrl = document.getElementById('mcp-doubao-url');
+    const elDoubaoHeader = document.getElementById('mcp-doubao-header');
+    const elDoubaoCfg = document.getElementById('mcp-doubao-cfg');
+    const elJsonCfg = document.getElementById('mcp-json-cfg');
+    const elPrompt = document.getElementById('mcp-prompt-text');
+
+    if (elEndpoint) elEndpoint.textContent = mcpUrl;
+    if (elToken) elToken.textContent = token || '(请先登录获取 Token)';
+    if (elDoubaoUrl) elDoubaoUrl.textContent = token ? `${mcpUrl}?token=${token}` : mcpUrl;
+    if (elDoubaoHeader) elDoubaoHeader.textContent = token ? `Authorization: Bearer ${token}` : 'Authorization: Bearer <TOKEN>';
+
+    const doubaoGuide = `【豆包桌面版 MCP 配置】\n服务名称: agent-gateway\n协议类型: SSE / HTTP\n服务 URL: ${mcpUrl}${token ? '?token=' + token : ''}\n请求头: Authorization: Bearer ${token}`;
+    if (elDoubaoCfg) elDoubaoCfg.value = doubaoGuide;
+
+    const mcpJson = {
+      mcpServers: {
+        "agent-gateway": {
+          url: mcpUrl,
+          headers: {
+            Authorization: `Bearer ${token}`
+          }
+        }
+      }
+    };
+    if (elJsonCfg) elJsonCfg.textContent = JSON.stringify(mcpJson, null, 2);
+
+    const promptText = `【Agent 网关集群协作接入指南】
+你好！请将我们的统一 Agent 网关接入你的 AI 编程助手（豆包桌面版 / Codex / Cursor / Claude Desktop），即可直接在本地调度远端集群机器执行编码与构建：
+
+1. 网关信息
+• 控制台看板：${origin}/ui/ (账号 admin / 密码 admin)
+• MCP 服务端点：${mcpUrl}
+• 认证 Token：${token}
+
+2. 豆包桌面版接入步骤
+• 进入【设置】->【MCP 扩展/插件】->【添加服务】
+• 协议类型：SSE / HTTP
+• 服务名称：agent-gateway
+• 服务 URL：${mcpUrl}${token ? '?token=' + token : ''}
+• 请求头：Authorization: Bearer ${token}
+
+3. Codex / Cursor / Claude Desktop 接入
+在 mcpServers 配置中添加：
+${JSON.stringify(mcpJson, null, 2)}
+
+4. 接入后拥有的大模型集群调度能力
+• handoff_to_computer_agent：智能选机或向指定远端机器下发任务
+• wait_task_result：同步等待任务产物回传与终端输出
+• list_devices：查询集群中可用的工作节点与运行环境`;
+
+    if (elPrompt) elPrompt.textContent = promptText;
+  }
+
+  // Copy functionality
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.copy-btn');
+    if (!btn) return;
+    const targetId = btn.getAttribute('data-target');
+    const targetEl = document.getElementById(targetId);
+    if (!targetEl) return;
+    const textToCopy = targetEl.value || targetEl.textContent || '';
+    navigator.clipboard.writeText(textToCopy).then(() => {
+      const origText = btn.textContent;
+      btn.textContent = '✓ 已复制';
+      setTimeout(() => { btn.textContent = origText; }, 2000);
+    });
+  });
+
+  const copyPromptBtn = document.getElementById('copy-prompt-btn');
+  if (copyPromptBtn) {
+    copyPromptBtn.addEventListener('click', () => {
+      const promptEl = document.getElementById('mcp-prompt-text');
+      if (!promptEl) return;
+      navigator.clipboard.writeText(promptEl.textContent).then(() => {
+        const origText = copyPromptBtn.textContent;
+        copyPromptBtn.textContent = '✓ 协作指南已复制到剪贴板！';
+        setTimeout(() => { copyPromptBtn.textContent = origText; }, 2500);
+      });
+    });
+  }
+
   // Event Listeners for Filters & Refresh
   taskStateFilter.addEventListener('change', renderTasks);
   taskSearch.addEventListener('input', renderTasks);
   refreshBtn.addEventListener('click', () => {
     fetchTasks();
     fetchNodes();
+    updateMCPDocs();
   });
 
   // Initialization

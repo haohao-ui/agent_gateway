@@ -12,7 +12,7 @@
     <div class="login-card">
       <div class="login-header">
         <div class="brand-icon" style="margin: 0 auto 12px; width: 44px; height: 44px; font-size: 22px; display: flex; align-items: center; justify-content: center;">⚡</div>
-        <h2>Agent Gateway 控制台</h2>
+        <h2>Agent 网关控制台</h2>
         <p class="login-subtitle">请输入管理员账号密码进入运维看板</p>
       </div>
       <form id="login-form" class="login-form">
@@ -88,6 +88,7 @@
       <button class="tab-btn" data-tab="tab-nodes">节点列表 (Nodes)</button>
       <button class="tab-btn" data-tab="tab-submit">提交任务 (Submit)</button>
       <button class="tab-btn" data-tab="tab-doctor">自检诊断 (Doctor)</button>
+      <button class="tab-btn" data-tab="tab-mcp">🔌 MCP 协作接入 (Connect)</button>
     </nav>
 
     <!-- Main Content Area -->
@@ -200,6 +201,74 @@
           </div>
           <div id="doctor-results" class="doctor-container">
             <div class="empty-state">点击右上角“运行健康自检”执行实时检测</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Tab 5: MCP Connect -->
+      <section id="tab-mcp" class="tab-pane">
+        <div class="card" style="margin-bottom: 20px;">
+          <div class="card-header-flex">
+            <div>
+              <h2>🔌 MCP 远程协作接入 (Model Context Protocol)</h2>
+              <p class="form-desc">将网关挂载至 <strong>豆包桌面版、Codex、Cursor、Claude Desktop</strong>，让大模型直接具备集群调度与自动化执行能力。</p>
+            </div>
+          </div>
+
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin: 16px 0;">
+            <div style="background: var(--bg-input); padding: 14px 18px; border-radius: 8px; border: 1px solid var(--border-color);">
+              <span class="detail-label">HTTP / SSE MCP 服务端点</span>
+              <div style="display: flex; gap: 8px; align-items: center; margin-top: 6px;">
+                <code id="mcp-endpoint-url" style="font-size: 13px; color: var(--primary); word-break: break-all;">https://127.0.0.1:8443/mcp</code>
+                <button class="btn btn-secondary btn-sm copy-btn" data-target="mcp-endpoint-url">复制</button>
+              </div>
+            </div>
+            <div style="background: var(--bg-input); padding: 14px 18px; border-radius: 8px; border: 1px solid var(--border-color);">
+              <span class="detail-label">操作员 Bearer Token</span>
+              <div style="display: flex; gap: 8px; align-items: center; margin-top: 6px;">
+                <code id="mcp-token-val" style="font-size: 13px; color: #a7f3d0; word-break: break-all;">-</code>
+                <button class="btn btn-secondary btn-sm copy-btn" data-target="mcp-token-val">复制</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 运维一键通知协作同事卡片 -->
+        <div class="card" style="margin-bottom: 20px; border-left: 4px solid var(--primary);">
+          <div class="card-header-flex">
+            <div>
+              <h3>📋 运维同事协作提示词（一键复制发给同事）</h3>
+              <p class="form-desc">直接复制以下模板文本发送给开发同事，对方可直接在豆包或 Codex 中配置接入：</p>
+            </div>
+            <button id="copy-prompt-btn" class="btn btn-primary">一键复制协作指南</button>
+          </div>
+          <pre id="mcp-prompt-text" class="terminal-block" style="max-height: 280px; margin-top: 12px;"></pre>
+        </div>
+
+        <!-- 各客户端配置片段 -->
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 20px;">
+          <div class="card">
+            <div class="card-header-flex">
+              <h3>豆包桌面版 (Doubao Desktop)</h3>
+              <button class="btn btn-secondary btn-sm copy-btn" data-target="mcp-doubao-cfg">复制配置</button>
+            </div>
+            <p class="form-desc" style="margin-top: 6px;">在豆包进入【设置】->【MCP 扩展/插件】->【添加服务】：</p>
+            <div style="margin-top: 10px; font-size: 13px; color: var(--text-secondary); line-height: 1.8;">
+              <div>• <strong>协议类型</strong>：<code>SSE (Server-Sent Events) / HTTP</code></div>
+              <div>• <strong>服务名称</strong>：<code>agent-gateway</code></div>
+              <div>• <strong>服务 URL</strong>：<code id="mcp-doubao-url">-</code></div>
+              <div>• <strong>请求头 (Headers)</strong>：<code id="mcp-doubao-header">Authorization: Bearer ...</code></div>
+            </div>
+            <textarea id="mcp-doubao-cfg" style="display: none;"></textarea>
+          </div>
+
+          <div class="card">
+            <div class="card-header-flex">
+              <h3>Codex / Cursor / Claude Desktop</h3>
+              <button class="btn btn-secondary btn-sm copy-btn" data-target="mcp-json-cfg">复制 JSON</button>
+            </div>
+            <p class="form-desc" style="margin-top: 6px;">写入 <code>claude_desktop_config.json</code> 或 Cursor MCP 设置：</p>
+            <pre id="mcp-json-cfg" class="code-block" style="max-height: 220px; margin-top: 10px;"></pre>
           </div>
         </div>
       </section>

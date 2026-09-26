@@ -178,17 +178,30 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if s.policies != nil {
+		token := ""
 		headers := r.Header.Values("Authorization")
-		if len(headers) != 1 {
-			writeError(w, http.StatusUnauthorized, "unauthorized", "Authorization: Bearer <token> required for MCP")
+		if len(headers) == 1 {
+			fields := strings.Fields(headers[0])
+			if len(fields) == 2 && strings.EqualFold(fields[0], "Bearer") && len(fields[1]) <= 1024 {
+				token = fields[1]
+			}
+		}
+		if token == "" {
+			qToken := r.URL.Query().Get("token")
+			if qToken != "" && len(qToken) <= 1024 {
+				token = qToken
+			}
+		}
+		if token == "" {
+			if c, err := r.Cookie("gateway_token"); err == nil && c.Value != "" && len(c.Value) <= 1024 {
+				token = c.Value
+			}
+		}
+		if token == "" {
+			writeError(w, http.StatusUnauthorized, "unauthorized", "operator credential required for MCP (Bearer header, ?token= or cookie)")
 			return
 		}
-		fields := strings.Fields(headers[0])
-		if len(fields) != 2 || !strings.EqualFold(fields[0], "Bearer") {
-			writeError(w, http.StatusUnauthorized, "unauthorized", "invalid authorization header")
-			return
-		}
-		if _, err := s.policies.Authenticate(r.Context(), fields[1]); err != nil {
+		if _, err := s.policies.Authenticate(r.Context(), token); err != nil {
 			writeError(w, http.StatusUnauthorized, "unauthorized", "invalid operator credential for MCP")
 			return
 		}
