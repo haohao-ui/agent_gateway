@@ -155,6 +155,16 @@ Orca 不可用：`Unable to determine Orca.app path from symlink: /usr/local/bin
   - 验证结果：全包单元测试与 `-race` 竞态检测全数通过、`gofmt` 规范、`go vet` 零告警、Linux/Windows 交叉编译成功；
   - 交付验收报告 `docs/reports/webui-sse.md`。
 
+### M3-A：官方 MCP（Model Context Protocol）接入完成（2026-09-26）
+
+- 主线合入（分支 `feat/mcp`）：
+  - 依赖锁定：引入官方 `github.com/modelcontextprotocol/go-sdk v1.8.0`；
+  - `internal/mcp`：注册 5 个标准 MCP Tools（`task_submit`、`task_get`、`task_cancel`、`device_list`、`doctor_diagnose`）；实现 `LocalBackend`（直接操作本地 SQLite）与 `ClientBackend`（基于 HTTPS + Bearer 凭证安全调用运行中网关）；实现 StdioTransport 标准输入输出服务；
+  - `cmd/mesh`：新增 `mesh mcp` 子命令，支持在本地启动或连接远端网关，为 Claude Desktop、Cursor、Cline 等 Agent 宿主提供原生 MCP 服务接入；
+  - 验证结果：全包单元测试与 `-race` 竞态检测全部通过、`gofmt` 规范、`go vet` 零告警、Linux/Windows 交叉编译成功；
+  - 交付验收报告 `docs/reports/mcp.md`。
+
+
 
 
 
