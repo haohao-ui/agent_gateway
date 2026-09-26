@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"agent-gateway/internal/artifact"
 	"agent-gateway/internal/devicestore"
 	"agent-gateway/internal/doctor"
 	"agent-gateway/internal/httpapi"
@@ -112,6 +113,13 @@ func serveGateway(ctx context.Context, opts gatewayOptions, onReady func(gateway
 	api.SetDoctorFunc(func(ctx context.Context) any {
 		return doctor.DiagnoseServer(ctx, opts.DataDir)
 	})
+	artifacts, err := artifact.Open(filepath.Join(opts.DataDir, "artifacts"))
+	if err != nil {
+		return fmt.Errorf("open artifact store: %w", err)
+	}
+	defer artifacts.Close()
+	api.SetArtifactStore(artifacts)
+
 	tlsConfig, err := api.BuildTLSConfig(opts.Hosts)
 	if err != nil {
 		return fmt.Errorf("build the server TLS configuration: %w", err)
