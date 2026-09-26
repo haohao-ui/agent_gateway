@@ -137,6 +137,16 @@ Orca 不可用：`Unable to determine Orca.app path from symlink: /usr/local/bin
   - 验证结果：全仓单元测试与 `-race` 竞态检测全部通过、`gofmt` 规范、`go vet` 零告警、跨平台编译成功；
   - 交付验收报告 `docs/reports/device-list.md`。
 
+### M2 收尾：环境自检与连通性诊断命令（mesh doctor）完成（2026-09-26）
+
+- 主线合入（分支 `feat/doctor`）：
+  - `internal/doctor`：实现证书有效期及临期预警校验、时钟漂移检测（基于 HTTP 响应头 Date，阈值 5 秒）、SQLite 数据库完整性检查（`PRAGMA integrity_check`）、节点及服务端诊断逻辑；
+  - `internal/httpapi`：新增 `/v1/tasks/probe` 探针端点，执行 mTLS 双向认证及握手验证；
+  - `cmd/mesh`：新增 `mesh doctor` 命令，支持 `--node-dir`、`--server-mode`、`--data-dir` 以及 `--json` 输出；
+  - 验证结果：全包单元测试与 `-race` 竞态检测全部通过、`gofmt` 规范、`go vet` 零告警、Linux/Windows 交叉编译成功；
+  - 交付验收报告 `docs/reports/doctor.md`。
+
+
 
 
 
