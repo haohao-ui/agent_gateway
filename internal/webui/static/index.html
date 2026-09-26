@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Agent Gateway Console</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="layout">
+    <!-- Top Header -->
+    <header class="header">
+      <div class="brand">
+        <div class="brand-icon">⚡</div>
+        <div class="brand-text">
+          <h1>Agent Gateway</h1>
+          <span class="subtitle">Mesh Coordination & Task Console</span>
+        </div>
+      </div>
+      <div class="header-actions">
+        <div id="connection-status" class="status-indicator offline">
+          <span class="dot"></span>
+          <span class="text">Connecting...</span>
+        </div>
+        <button id="refresh-btn" class="btn btn-secondary">↻ 刷新</button>
+      </div>
+    </header>
+
+    <!-- Metrics Summary -->
+    <section class="metrics-grid">
+      <div class="metric-card">
+        <span class="metric-title">注册节点</span>
+        <span id="metric-nodes" class="metric-value">0</span>
+      </div>
+      <div class="metric-card card-queued">
+        <span class="metric-title">排队中 (Queued)</span>
+        <span id="metric-queued" class="metric-value">0</span>
+      </div>
+      <div class="metric-card card-running">
+        <span class="metric-title">执行中 (Running)</span>
+        <span id="metric-running" class="metric-value">0</span>
+      </div>
+      <div class="metric-card card-succeeded">
+        <span class="metric-title">成功 (Succeeded)</span>
+        <span id="metric-succeeded" class="metric-value">0</span>
+      </div>
+      <div class="metric-card card-failed">
+        <span class="metric-title">失败 (Failed)</span>
+        <span id="metric-failed" class="metric-value">0</span>
+      </div>
+      <div class="metric-card card-unknown">
+        <span class="metric-title">待对账 (Unknown)</span>
+        <span id="metric-unknown" class="metric-value">0</span>
+      </div>
+    </section>
+
+    <!-- Navigation Tabs -->
+    <nav class="nav-tabs">
+      <button class="tab-btn active" data-tab="tab-tasks">任务看板 (Tasks)</button>
+      <button class="tab-btn" data-tab="tab-nodes">节点列表 (Nodes)</button>
+      <button class="tab-btn" data-tab="tab-submit">提交任务 (Submit)</button>
+      <button class="tab-btn" data-tab="tab-doctor">自检诊断 (Doctor)</button>
+    </nav>
+
+    <!-- Main Content Area -->
+    <main class="main-content">
+      <!-- Tab 1: Tasks -->
+      <section id="tab-tasks" class="tab-pane active">
+        <div class="toolbar">
+          <div class="filter-group">
+            <label for="task-state-filter">状态筛选：</label>
+            <select id="task-state-filter" class="select-input">
+              <option value="">全部状态</option>
+              <option value="queued">Queued (排队中)</option>
+              <option value="leased">Leased (已锁定)</option>
+              <option value="running">Running (执行中)</option>
+              <option value="succeeded">Succeeded (已成功)</option>
+              <option value="failed">Failed (失败)</option>
+              <option value="unknown">Unknown (异常/待对账)</option>
+              <option value="cancelled">Cancelled (已取消)</option>
+            </select>
+          </div>
+          <div class="search-group">
+            <input type="text" id="task-search" class="text-input" placeholder="按 Task ID 或 NodeID 搜索...">
+          </div>
+        </div>
+
+        <div class="table-container">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>任务 ID</th>
+                <th>状态</th>
+                <th>目标节点</th>
+                <th>能力 (Capability)</th>
+                <th>指令摘要</th>
+                <th>更新时间</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="tasks-table-body">
+              <tr>
+                <td colspan="7" class="empty-state">正在加载任务列表...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Tab 2: Nodes -->
+      <section id="tab-nodes" class="tab-pane">
+        <div class="table-container">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>节点 ID (Node ID)</th>
+                <th>公钥指纹 (Fingerprint)</th>
+                <th>证书到期时间</th>
+                <th>状态</th>
+                <th>注册时间</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="nodes-table-body">
+              <tr>
+                <td colspan="6" class="empty-state">正在加载节点列表...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- Tab 3: Submit Task -->
+      <section id="tab-submit" class="tab-pane">
+        <div class="card form-card">
+          <h2>提交新任务</h2>
+          <p class="form-desc">向指定节点分发执行指令，任务将写入 SQLite 队列并等待节点领取。</p>
+          <form id="submit-task-form">
+            <div class="form-group">
+              <label for="submit-node-id">目标节点 (Node ID) <span class="required">*</span></label>
+              <input type="text" id="submit-node-id" class="text-input" placeholder="例如：node-macbook-pro" required>
+            </div>
+            <div class="form-group">
+              <label for="submit-capability">能力标识 (Capability) <span class="required">*</span></label>
+              <input type="text" id="submit-capability" class="text-input" value="agent.run" required>
+            </div>
+            <div class="form-group">
+              <label for="submit-instruction">执行指令 / 输入参数 (JSON 或纯文本) <span class="required">*</span></label>
+              <textarea id="submit-instruction" class="textarea-input" rows="5" placeholder='{"instruction": "echo Hello from Agent Gateway"}' required></textarea>
+            </div>
+            <div class="form-group">
+              <label for="submit-timeout">超时时间 (秒)</label>
+              <input type="number" id="submit-timeout" class="text-input" value="120" min="10" max="3600">
+            </div>
+            <div class="form-actions">
+              <button type="submit" class="btn btn-primary">提交任务</button>
+            </div>
+            <div id="submit-message" class="alert hidden"></div>
+          </form>
+        </div>
+      </section>
+
+      <!-- Tab 4: Doctor -->
+      <section id="tab-doctor" class="tab-pane">
+        <div class="card">
+          <div class="card-header-flex">
+            <div>
+              <h2>网关系统健康诊断 (Doctor)</h2>
+              <p class="form-desc">自检 CA 证书有效期、时钟偏移、SQLite 数据库完整性及底层环境。</p>
+            </div>
+            <button id="run-doctor-btn" class="btn btn-primary">运行健康自检</button>
+          </div>
+          <div id="doctor-results" class="doctor-container">
+            <div class="empty-state">点击右上角“运行健康自检”执行实时检测</div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Task Detail Modal -->
+    <div id="task-modal" class="modal hidden">
+      <div class="modal-backdrop"></div>
+      <div class="modal-window">
+        <div class="modal-header">
+          <h3 id="modal-task-title">任务详情</h3>
+          <button class="modal-close-btn">&times;</button>
+        </div>
+        <div class="modal-body">
+          <div class="detail-row">
+            <span class="detail-label">任务 ID:</span>
+            <code id="modal-task-id"></code>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">当前状态:</span>
+            <span id="modal-task-status" class="badge"></span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">目标节点:</span>
+            <span id="modal-task-node"></span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">当前 Attempt:</span>
+            <span id="modal-task-attempt"></span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">租约到期:</span>
+            <span id="modal-task-lease"></span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">输入内容:</span>
+            <pre id="modal-task-input" class="code-block"></pre>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">执行输出 (终端流):</span>
+            <pre id="modal-task-output" class="terminal-block">等待输出...</pre>
+          </div>
+        </div>
+        <div class="modal-footer" id="modal-actions">
+          <button class="btn btn-secondary modal-close-btn">关闭</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Reconcile Modal -->
+    <div id="reconcile-modal" class="modal hidden">
+      <div class="modal-backdrop"></div>
+      <div class="modal-window">
+        <div class="modal-header">
+          <h3>Unknown 任务对账裁决</h3>
+          <button class="modal-close-btn">&times;</button>
+        </div>
+        <div class="modal-body">
+          <p>任务 <code id="reconcile-task-id"></code> 当前处于 Unknown 状态。请选择人工裁决方案：</p>
+          <div class="reconcile-options">
+            <label class="radio-card">
+              <input type="radio" name="reconcile-action" value="requeue" checked>
+              <div class="radio-content">
+                <strong>重新排队 (Requeue)</strong>
+                <span>将任务重置为 Queued 状态，允许节点重新领取并生成新的 Attempt ID，旧 Attempt 自动失效。</span>
+              </div>
+            </label>
+            <label class="radio-card">
+              <input type="radio" name="reconcile-action" value="succeeded">
+              <div class="radio-content">
+                <strong>标记成功 (Mark Succeeded)</strong>
+                <span>确认任务副作用已在目标机完成，直接转入最终 Succeeded 状态。</span>
+              </div>
+            </label>
+            <label class="radio-card">
+              <input type="radio" name="reconcile-action" value="failed">
+              <div class="radio-content">
+                <strong>标记失败 (Mark Failed)</strong>
+                <span>确认任务执行已异常中断且无法恢复，直接归档为 Failed 状态。</span>
+              </div>
+            </label>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary modal-close-btn">取消</button>
+          <button id="reconcile-submit-btn" class="btn btn-primary">提交裁决</button>
+        </div>
+      </div>
+    </div>
+
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>
