@@ -105,6 +105,16 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("POST /v1/tasks/renew", s.requireNodeAuth(s.handleRenew))
 	s.mux.HandleFunc("POST /v1/tasks/complete", s.requireNodeAuth(s.handleComplete))
 	s.mux.HandleFunc("POST /v1/tasks/events", s.requireNodeAuth(s.handleEvents))
+	s.mux.HandleFunc("GET /v1/tasks/probe", s.requireNodeAuth(s.handleProbe))
+}
+
+func (s *Server) handleProbe(w http.ResponseWriter, r *http.Request) {
+	nodeID, _ := r.Context().Value(nodeIDContextKey).(string)
+	writeJSON(w, http.StatusOK, map[string]string{
+		"status":  "ok",
+		"node_id": nodeID,
+		"time":    time.Now().UTC().Format(time.RFC3339),
+	})
 }
 
 func (s *Server) Handler() http.Handler {

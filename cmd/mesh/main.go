@@ -28,6 +28,7 @@ usage:
 
   mesh credential issue|revoke   manage operator credentials locally
   mesh device list|revoke        list or revoke enrolled devices
+  mesh doctor [flags]            diagnose node or server environment and connectivity
 
 Common flags:
   --log-level debug|info|warn|error   (default info)
@@ -64,6 +65,8 @@ func main() {
 		err = runDevice(ctx, os.Args[2:])
 	case "task":
 		err = runTask(ctx, os.Args[2:])
+	case "doctor":
+		err = runDoctor(ctx, os.Args[2:])
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 		return
