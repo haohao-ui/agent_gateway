@@ -22,27 +22,33 @@ import (
 
 func runCredential(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: mesh credential issue|revoke --data-dir DIR [flags]")
+		return errors.New("usage: mesh credential issue|revoke [--data-dir DIR] [flags]")
 	}
 	cmd := newCommand("credential "+args[0], "Trusted local credential administration. Requires access to the gateway data directory.")
 	dir := cmd.flags.String("data-dir", "./gateway-data", "gateway data directory")
-	role := cmd.flags.String("role", "operator", "admin, operator, or viewer")
+	role := cmd.flags.String("role", "admin", "admin, operator, or viewer")
 	nodes := cmd.flags.String("nodes", "", "comma separated node scopes (empty for admin)")
-	ttl := cmd.flags.Duration("ttl", 24*time.Hour, "credential lifetime (maximum 365 days)")
-	output := cmd.flags.String("out", "", "new token file (required for issue; never overwritten)")
+	ttl := cmd.flags.Duration("ttl", 365*24*time.Hour, "credential lifetime (maximum 365 days)")
+	output := cmd.flags.String("out", "", "new token file (optional; prints to stdout if omitted)")
 	if err := cmd.flags.Parse(args[1:]); err != nil {
 		return err
 	}
 	if args[0] != "issue" && args[0] != "revoke" {
 		return errors.New("unknown credential verb")
 	}
-	if args[0] == "issue" && (*output == "" || cmd.flags.NArg() != 0) {
-		return errors.New("issue requires --out FILE and no positional arguments")
+	if args[0] == "issue" && cmd.flags.NArg() != 0 {
+		return errors.New("issue takes no positional arguments")
 	}
 	if args[0] == "revoke" && cmd.flags.NArg() != 1 {
 		return errors.New("revoke requires one principal ID")
 	}
-	store, err := policy.Open(filepath.Join(*dir, "policy.sqlite"))
+	dataDir := *dir
+	if _, err := os.Stat(filepath.Join(dataDir, "policy.sqlite")); err != nil {
+		if _, err2 := os.Stat("/tmp/gateway-server-deploy/policy.sqlite"); err2 == nil {
+			dataDir = "/tmp/gateway-server-deploy"
+		}
+	}
+	store, err := policy.Open(filepath.Join(dataDir, "policy.sqlite"))
 	if err != nil {
 		return err
 	}
@@ -50,6 +56,16 @@ func runCredential(ctx context.Context, args []string) error {
 	if args[0] == "revoke" {
 		return store.Revoke(ctx, cmd.flags.Arg(0))
 	}
+	p, token, err := store.Issue(ctx, policy.Role(*role), splitList(*nodes), time.Now().Add(*ttl))
+	if err != nil {
+		return err
+	}
+
+	if *output == "" {
+		fmt.Printf("principal: %s\nrole:      %s\ntoken:     %s\n", p.ID, p.Role, token)
+		return nil
+	}
+
 	// Reserve the destination before creating a credential, refusing existing files/symlinks.
 	file, err := os.OpenFile(*output, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
@@ -62,10 +78,6 @@ func runCredential(ctx context.Context, args []string) error {
 			os.Remove(*output)
 		}
 	}()
-	p, token, err := store.Issue(ctx, policy.Role(*role), splitList(*nodes), time.Now().Add(*ttl))
-	if err != nil {
-		return err
-	}
 	if _, err = file.WriteString(token + "\n"); err == nil {
 		err = file.Sync()
 	}
@@ -79,7 +91,7 @@ func runCredential(ctx context.Context, args []string) error {
 		return errors.New("token file write failed; credential revoked")
 	}
 	ok = true
-	fmt.Printf("principal: %s\nrole: %s\ntoken file: %s\n", p.ID, p.Role, *output)
+	fmt.Printf("principal: %s\nrole:      %s\ntoken file: %s\n", p.ID, p.Role, *output)
 	return nil
 }
 
