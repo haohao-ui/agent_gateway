@@ -19,6 +19,9 @@ const taskHelp = `usage:
   mesh task cancel --node-dir ./node <task-id>
 
 Operator mode: add --token-file FILE --server https://HOST --ca FILE; submit also requires --node-id ID. Do not combine with --node-dir.
+  mesh task requeue --server URL --ca FILE --token-file FILE <task-id>
+  mesh task resolve --server URL --ca FILE --token-file FILE [--state failed|cancelled] [--reason TEXT] <task-id>
+  mesh task list --server URL --ca FILE --token-file FILE [--state unknown]
 
 The legacy node task API is authenticated with the machine's certificate, so these commands
 speak as the node in --node-dir: a task is queued for that machine and only that
@@ -39,6 +42,12 @@ func runTask(ctx context.Context, args []string) error {
 		return runTaskGet(ctx, args[1:])
 	case "cancel":
 		return runTaskCancel(ctx, args[1:])
+	case "requeue":
+		return runTaskRequeue(ctx, args[1:])
+	case "resolve":
+		return runTaskResolve(ctx, args[1:])
+	case "list":
+		return runTaskList(ctx, args[1:])
 	case "help", "-h", "--help":
 		fmt.Print(taskHelp)
 		return nil
@@ -217,4 +226,61 @@ func rejectNodeIdentity(cmd *command) error {
 		}
 	})
 	return err
+}
+
+func runTaskRequeue(ctx context.Context, args []string) error {
+	cmd := newCommand("task requeue", "Requeue a task parked in unknown state back to queued (operator only).")
+	server := cmd.flags.String("server", "", "gateway HTTPS URL")
+	tokenFile := cmd.flags.String("token-file", "", "operator credential file")
+	caFile := cmd.flags.String("ca", "", "trusted gateway CA file")
+	if err := cmd.flags.Parse(args); err != nil {
+		return err
+	}
+	if cmd.flags.NArg() != 1 {
+		return errors.New("exactly one task id is required")
+	}
+	if *tokenFile == "" || *server == "" || *caFile == "" {
+		return errors.New("requeue requires --server, --ca, and --token-file")
+	}
+	return operatorTaskCommand(ctx, "requeue", *server, *caFile, *tokenFile, "", cmd.flags.Arg(0), nil)
+}
+
+func runTaskResolve(ctx context.Context, args []string) error {
+	cmd := newCommand("task resolve", "Resolve a task parked in unknown state as failed or cancelled (operator only).")
+	server := cmd.flags.String("server", "", "gateway HTTPS URL")
+	tokenFile := cmd.flags.String("token-file", "", "operator credential file")
+	caFile := cmd.flags.String("ca", "", "trusted gateway CA file")
+	state := cmd.flags.String("state", "failed", "terminal state: failed or cancelled")
+	reason := cmd.flags.String("reason", "operator resolved unknown task", "rationale for terminal resolution")
+	if err := cmd.flags.Parse(args); err != nil {
+		return err
+	}
+	if cmd.flags.NArg() != 1 {
+		return errors.New("exactly one task id is required")
+	}
+	if *tokenFile == "" || *server == "" || *caFile == "" {
+		return errors.New("resolve requires --server, --ca, and --token-file")
+	}
+	body := map[string]any{
+		"state":      *state,
+		"text":       *reason,
+		"error_code": "operator_resolved",
+		"exit_code":  -1,
+	}
+	return operatorTaskCommand(ctx, "resolve", *server, *caFile, *tokenFile, "", cmd.flags.Arg(0), body)
+}
+
+func runTaskList(ctx context.Context, args []string) error {
+	cmd := newCommand("task list", "List tasks (operator only).")
+	server := cmd.flags.String("server", "", "gateway HTTPS URL")
+	tokenFile := cmd.flags.String("token-file", "", "operator credential file")
+	caFile := cmd.flags.String("ca", "", "trusted gateway CA file")
+	state := cmd.flags.String("state", "unknown", "filter tasks by state (default unknown)")
+	if err := cmd.flags.Parse(args); err != nil {
+		return err
+	}
+	if *tokenFile == "" || *server == "" || *caFile == "" {
+		return errors.New("list requires --server, --ca, and --token-file")
+	}
+	return operatorTaskCommand(ctx, "list", *server, *caFile, *tokenFile, "", *state, nil)
 }

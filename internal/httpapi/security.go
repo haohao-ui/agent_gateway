@@ -88,6 +88,9 @@ func (s *Server) registerOperatorRoutes() {
 	s.mux.HandleFunc("POST /v1/operator/tasks/submit", s.requireOperator(s.operatorSubmit))
 	s.mux.HandleFunc("GET /v1/operator/tasks/{id}", s.requireOperator(s.operatorGet))
 	s.mux.HandleFunc("POST /v1/operator/tasks/{id}/cancel", s.requireOperator(s.operatorCancel))
+	s.mux.HandleFunc("POST /v1/operator/tasks/{id}/requeue", s.requireOperator(s.operatorRequeue))
+	s.mux.HandleFunc("POST /v1/operator/tasks/{id}/resolve", s.requireOperator(s.operatorResolve))
+	s.mux.HandleFunc("GET /v1/operator/tasks", s.requireOperator(s.operatorList))
 	s.mux.HandleFunc("POST /v1/operator/devices/{id}/revoke", s.requireOperator(s.operatorRevoke))
 }
 func (s *Server) operatorSubmit(w http.ResponseWriter, r *http.Request) {
@@ -135,6 +138,69 @@ func (s *Server) operatorCancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, task)
+}
+func (s *Server) operatorRequeue(w http.ResponseWriter, r *http.Request) {
+	task, ok := s.operatorTask(w, r, "task.submit")
+	if !ok {
+		return
+	}
+	requeued, err := s.store.Requeue(r.Context(), task.ID)
+	if err != nil {
+		handleStoreError(w, err)
+		return
+	}
+	s.notifyNode(requeued.NodeID)
+	writeJSON(w, 200, requeued)
+}
+func (s *Server) operatorResolve(w http.ResponseWriter, r *http.Request) {
+	task, ok := s.operatorTask(w, r, "task.cancel")
+	if !ok {
+		return
+	}
+	var in struct {
+		State     string `json:"state"`
+		Text      string `json:"text"`
+		ErrorCode string `json:"error_code"`
+		ExitCode  int    `json:"exit_code"`
+	}
+	if !readJSON(w, r, credentialBodyLimit, &in) {
+		return
+	}
+	res := protocol.Result{
+		State:     protocol.State(in.State),
+		Text:      in.Text,
+		ErrorCode: in.ErrorCode,
+		ExitCode:  in.ExitCode,
+	}
+	resolved, err := s.store.Resolve(r.Context(), task.ID, res)
+	if err != nil {
+		handleStoreError(w, err)
+		return
+	}
+	writeJSON(w, 200, resolved)
+}
+func (s *Server) operatorList(w http.ResponseWriter, r *http.Request) {
+	stateFilter := r.URL.Query().Get("state")
+	if stateFilter != "" && stateFilter != "unknown" {
+		writeError(w, 400, "invalid_argument", "only state=unknown is supported")
+		return
+	}
+	p := operatorPrincipal(r)
+	tasks, err := s.store.ListUnknown(r.Context(), 100)
+	if err != nil {
+		handleStoreError(w, err)
+		return
+	}
+	var filtered []protocol.Task
+	for _, t := range tasks {
+		if policy.Authorize(p, "task.read", t.NodeID) == nil {
+			filtered = append(filtered, t)
+		}
+	}
+	if filtered == nil {
+		filtered = []protocol.Task{}
+	}
+	writeJSON(w, 200, filtered)
 }
 func (s *Server) operatorRevoke(w http.ResponseWriter, r *http.Request) {
 	p := operatorPrincipal(r)

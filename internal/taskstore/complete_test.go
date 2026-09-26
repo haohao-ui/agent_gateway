@@ -244,7 +244,7 @@ func TestCompleteRejectsExpiredLease(t *testing.T) {
 	}
 }
 
-func TestCompleteUnknownTaskIsRejected(t *testing.T) {
+func TestCompleteUnknownTaskWithMismatchedCredentialIsRejected(t *testing.T) {
 	ctx := context.Background()
 	st := newStore(t)
 	base := time.Now().UTC()
@@ -257,15 +257,20 @@ func TestCompleteUnknownTaskIsRejected(t *testing.T) {
 	if moved != 1 {
 		t.Fatalf("Expire moved %d tasks, want 1", moved)
 	}
-	if err := st.Complete(ctx, task.ID, lease.Task.AttemptID, lease.Token, baseResult()); !errors.Is(err, protocol.ErrConflict) {
-		t.Fatalf("Complete on an unknown task = %v, want protocol.ErrConflict", err)
+	// Wrong token is unauthorized
+	if err := st.Complete(ctx, task.ID, lease.Task.AttemptID, "wrong-token-abc", baseResult()); !errors.Is(err, protocol.ErrUnauthorized) {
+		t.Fatalf("Complete with wrong token = %v, want protocol.ErrUnauthorized", err)
+	}
+	// Correct token reconciles successfully
+	if err := st.Complete(ctx, task.ID, lease.Task.AttemptID, lease.Token, baseResult()); err != nil {
+		t.Fatalf("Complete on unknown task with valid credentials failed: %v", err)
 	}
 	got, err := st.Get(ctx, task.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if got.State != protocol.Unknown || got.Result != nil {
-		t.Fatalf("task after a refused completion = %+v", got)
+	if got.State != protocol.Succeeded || got.Result == nil {
+		t.Fatalf("task after reconciliation = %+v", got)
 	}
 }
 

@@ -151,7 +151,7 @@ func (c *operatorClient) request(ctx context.Context, method, path string, in an
 	}
 	return nil
 }
-func operatorTaskCommand(ctx context.Context, verb, server, ca, token, nodeID, id string, in protocol.SubmitRequest) error {
+func operatorTaskCommand(ctx context.Context, verb, server, ca, token, nodeID, id string, in any) error {
 	c, err := newOperatorClient(server, ca, token)
 	if err != nil {
 		return err
@@ -160,15 +160,37 @@ func operatorTaskCommand(ctx context.Context, verb, server, ca, token, nodeID, i
 	var task protocol.Task
 	switch verb {
 	case "submit":
-		if nodeID == "" {
+		sub, ok := in.(protocol.SubmitRequest)
+		if !ok || nodeID == "" {
 			return errors.New("operator submit requires --node-id")
 		}
-		in.NodeID = nodeID
-		err = c.request(ctx, "POST", "/v1/operator/tasks/submit", in, &task)
+		sub.NodeID = nodeID
+		err = c.request(ctx, "POST", "/v1/operator/tasks/submit", sub, &task)
 	case "get":
 		err = c.request(ctx, "GET", "/v1/operator/tasks/"+url.PathEscape(id), nil, &task)
 	case "cancel":
 		err = c.request(ctx, "POST", "/v1/operator/tasks/"+url.PathEscape(id)+"/cancel", nil, &task)
+	case "requeue":
+		err = c.request(ctx, "POST", "/v1/operator/tasks/"+url.PathEscape(id)+"/requeue", nil, &task)
+	case "resolve":
+		err = c.request(ctx, "POST", "/v1/operator/tasks/"+url.PathEscape(id)+"/resolve", in, &task)
+	case "list":
+		var tasks []protocol.Task
+		path := "/v1/operator/tasks"
+		if id != "" {
+			path += "?state=" + url.QueryEscape(id)
+		}
+		if err = c.request(ctx, "GET", path, nil, &tasks); err != nil {
+			return err
+		}
+		encoded, err := json.MarshalIndent(tasks, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Printf("%s\n", encoded)
+		return nil
+	default:
+		return fmt.Errorf("unknown operator task verb %q", verb)
 	}
 	if err != nil {
 		return err

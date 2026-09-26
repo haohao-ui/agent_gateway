@@ -147,10 +147,14 @@ func TestPublicAPIExpiresLapsedLeaseIntoUnknown(t *testing.T) {
 	if task.State != protocol.Unknown {
 		t.Fatalf("state = %s after the lease lapsed, want unknown", task.State)
 	}
-	if task.AttemptID != lease.Task.AttemptID {
-		t.Fatalf("attempt_id = %q, want the attempt that has to be reconciled %q", task.AttemptID, lease.Task.AttemptID)
+	if err := st.Complete(ctx, lease.Task.ID, lease.Task.AttemptID, lease.Token, protocol.Result{State: protocol.Succeeded}); err != nil {
+		t.Fatalf("Complete on an unknown task via reconciliation failed: %v", err)
 	}
-	if err := st.Complete(ctx, lease.Task.ID, lease.Task.AttemptID, lease.Token, protocol.Result{State: protocol.Succeeded}); !errors.Is(err, protocol.ErrConflict) {
-		t.Fatalf("Complete on an unknown task = %v, want protocol.ErrConflict", err)
+	reconciled, err := st.Get(ctx, lease.Task.ID)
+	if err != nil {
+		t.Fatalf("Get reconciled task: %v", err)
+	}
+	if reconciled.State != protocol.Succeeded {
+		t.Fatalf("reconciled task state = %s, want succeeded", reconciled.State)
 	}
 }

@@ -226,17 +226,19 @@ func (s *Store) Complete(ctx context.Context, taskID, attemptID, token string, r
 				return conflictf("task %s already recorded a different result", t.ID)
 			}
 			return nil
-		case protocol.Unknown:
-			return conflictf("task %s is unknown; M1 does not reconcile an unknown execution", t.ID)
 		case protocol.Leased:
 			return conflictf("task %s is leased; start it before completing it", t.ID)
 		}
-		if err := checkLeaseActive(t, now); err != nil {
-			return err
+		// A task parked in unknown state accepts a completion from the node that
+		// holds the current attempt credentials without requiring an active lease.
+		if t.State != protocol.Unknown {
+			if err := checkLeaseActive(t, now); err != nil {
+				return err
+			}
 		}
 		var next protocol.State
 		switch t.State {
-		case protocol.Running:
+		case protocol.Running, protocol.Unknown:
 			next = result.State
 		case protocol.CancelRequested:
 			if result.State != protocol.Cancelled {

@@ -215,3 +215,105 @@ func TestSecureUnknownCertificateAndPlainHTTP(t *testing.T) {
 		t.Fatal("missing store accepted")
 	}
 }
+
+func TestSecureOperatorReconcileRequeueAndResolve(t *testing.T) {
+	s, ts, ca := secureFixture(t)
+	node := pairNode(t, ts, ca)
+	c := unauthenticatedClient(t, ca)
+	defer c.CloseIdleConnections()
+	defer node.client.CloseIdleConnections()
+
+	admin := issueRole(t, s, policy.Admin)
+	op := issueRole(t, s, policy.Operator, node.nodeID)
+	viewer := issueRole(t, s, policy.Viewer, node.nodeID)
+	otherOp := issueRole(t, s, policy.Operator, "other-node-xyz")
+
+	// Submit and claim a task, then let it expire into unknown
+	submitReq := protocol.SubmitRequest{
+		NodeID:            node.nodeID,
+		Capability:        "agent.run",
+		CapabilityVersion: 1,
+		Input:             json.RawMessage(`{"prompt":"reconcile-test"}`),
+		TimeoutSeconds:    30,
+	}
+	status, body := operatorCall(t, c, "POST", ts.URL+"/v1/operator/tasks/submit", op, submitReq)
+	if status != 201 {
+		t.Fatalf("submit: %d", status)
+	}
+	var task protocol.Task
+	if err := json.Unmarshal(body, &task); err != nil {
+		t.Fatal(err)
+	}
+	lease := mustClaim(t, ts, node)
+	mustStart(t, ts, node, lease)
+
+	// Expire to unknown
+	if _, err := s.store.Expire(context.Background(), time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. List unknown tasks
+	status, body = operatorCall(t, c, "GET", ts.URL+"/v1/operator/tasks?state=unknown", op, nil)
+	if status != 200 {
+		t.Fatalf("list unknown: %d", status)
+	}
+	var list []protocol.Task
+	if err := json.Unmarshal(body, &list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].ID != task.ID {
+		t.Fatalf("list mismatch: %+v", list)
+	}
+
+	// Other operator out of scope cannot see the task in list
+	status, body = operatorCall(t, c, "GET", ts.URL+"/v1/operator/tasks?state=unknown", otherOp, nil)
+	if status != 200 {
+		t.Fatalf("other list: %d", status)
+	}
+	var otherList []protocol.Task
+	json.Unmarshal(body, &otherList)
+	if len(otherList) != 0 {
+		t.Fatalf("other operator must see 0 tasks, got %d", len(otherList))
+	}
+
+	// 2. Viewer cannot requeue
+	status, _ = operatorCall(t, c, "POST", ts.URL+"/v1/operator/tasks/"+task.ID+"/requeue", viewer, nil)
+	if status != 404 {
+		t.Fatalf("viewer requeue want 404, got %d", status)
+	}
+
+	// 3. Operator in scope can requeue
+	status, body = operatorCall(t, c, "POST", ts.URL+"/v1/operator/tasks/"+task.ID+"/requeue", op, nil)
+	if status != 200 {
+		t.Fatalf("op requeue want 200, got %d", status)
+	}
+	var requeued protocol.Task
+	json.Unmarshal(body, &requeued)
+	if requeued.State != protocol.Queued {
+		t.Fatalf("requeued state want queued, got %s", requeued.State)
+	}
+
+	// Node claims again and gets new attempt
+	newLease := mustClaim(t, ts, node)
+	mustStart(t, ts, node, newLease)
+
+	// Expire again
+	s.store.Expire(context.Background(), time.Now().Add(time.Hour))
+
+	// 4. Resolve task as failed by operator
+	resolveBody := map[string]any{
+		"state":      "failed",
+		"text":       "manual abort",
+		"error_code": "manual_abort",
+		"exit_code":  -1,
+	}
+	status, body = operatorCall(t, c, "POST", ts.URL+"/v1/operator/tasks/"+task.ID+"/resolve", admin, resolveBody)
+	if status != 200 {
+		t.Fatalf("admin resolve want 200, got %d", status)
+	}
+	var resolved protocol.Task
+	json.Unmarshal(body, &resolved)
+	if resolved.State != protocol.Failed {
+		t.Fatalf("resolved state want failed, got %s", resolved.State)
+	}
+}
