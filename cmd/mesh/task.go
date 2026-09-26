@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,7 +18,9 @@ const taskHelp = `usage:
   mesh task get --node-dir ./node <task-id>
   mesh task cancel --node-dir ./node <task-id>
 
-The task API is authenticated with the machine's certificate, so these commands
+Operator mode: add --token-file FILE --server https://HOST --ca FILE; submit also requires --node-id ID. Do not combine with --node-dir.
+
+The legacy node task API is authenticated with the machine's certificate, so these commands
 speak as the node in --node-dir: a task is queued for that machine and only that
 machine can read or cancel it.
 `
@@ -82,6 +85,9 @@ func runTaskSubmit(ctx context.Context, args []string) error {
 	cmd := newCommand("task submit", "Queue a task for the machine in --node-dir.")
 	nodeDir := cmd.flags.String("node-dir", "./node", "directory holding the machine identity")
 	server := cmd.flags.String("server", "", "override the gateway URL recorded at pairing time")
+	tokenFile := cmd.flags.String("token-file", "", "operator credential file; requires --server and --ca")
+	caFile := cmd.flags.String("ca", "", "trusted gateway CA file")
+	nodeID := cmd.flags.String("node-id", "", "target node for operator submission")
 	capability := cmd.flags.String("capability", "agent.run", "capability name")
 	version := cmd.flags.Int("capability-version", 1, "capability version")
 	input := cmd.flags.String("input", "", "capability input as JSON, for example '{\"prompt\":\"hi\"}'")
@@ -101,6 +107,12 @@ func runTaskSubmit(ctx context.Context, args []string) error {
 		return err
 	}
 
+	if *tokenFile != "" {
+		if err := rejectNodeIdentity(cmd); err != nil {
+			return err
+		}
+		return operatorTaskCommand(ctx, "submit", *server, *caFile, *tokenFile, *nodeID, "", protocol.SubmitRequest{Capability: *capability, CapabilityVersion: *version, Input: json.RawMessage(*input), TimeoutSeconds: *timeout, IdempotencyKey: *idempotencyKey})
+	}
 	client, state, err := taskClient(ctx, *nodeDir, *server)
 	if err != nil {
 		return err
@@ -125,6 +137,8 @@ func runTaskGet(ctx context.Context, args []string) error {
 	cmd := newCommand("task get", "Show one task owned by the machine in --node-dir.")
 	nodeDir := cmd.flags.String("node-dir", "./node", "directory holding the machine identity")
 	server := cmd.flags.String("server", "", "override the gateway URL recorded at pairing time")
+	tokenFile := cmd.flags.String("token-file", "", "operator credential file; requires --server and --ca")
+	caFile := cmd.flags.String("ca", "", "trusted gateway CA file")
 	if err := cmd.flags.Parse(args); err != nil {
 		return err
 	}
@@ -132,6 +146,12 @@ func runTaskGet(ctx context.Context, args []string) error {
 		return errors.New("exactly one task id is required")
 	}
 
+	if *tokenFile != "" {
+		if err := rejectNodeIdentity(cmd); err != nil {
+			return err
+		}
+		return operatorTaskCommand(ctx, "get", *server, *caFile, *tokenFile, "", cmd.flags.Arg(0), protocol.SubmitRequest{})
+	}
 	client, _, err := taskClient(ctx, *nodeDir, *server)
 	if err != nil {
 		return err
@@ -149,6 +169,8 @@ func runTaskCancel(ctx context.Context, args []string) error {
 	cmd := newCommand("task cancel", "Ask for a task owned by the machine in --node-dir to stop.")
 	nodeDir := cmd.flags.String("node-dir", "./node", "directory holding the machine identity")
 	server := cmd.flags.String("server", "", "override the gateway URL recorded at pairing time")
+	tokenFile := cmd.flags.String("token-file", "", "operator credential file; requires --server and --ca")
+	caFile := cmd.flags.String("ca", "", "trusted gateway CA file")
 	if err := cmd.flags.Parse(args); err != nil {
 		return err
 	}
@@ -156,6 +178,12 @@ func runTaskCancel(ctx context.Context, args []string) error {
 		return errors.New("exactly one task id is required")
 	}
 
+	if *tokenFile != "" {
+		if err := rejectNodeIdentity(cmd); err != nil {
+			return err
+		}
+		return operatorTaskCommand(ctx, "cancel", *server, *caFile, *tokenFile, "", cmd.flags.Arg(0), protocol.SubmitRequest{})
+	}
 	client, _, err := taskClient(ctx, *nodeDir, *server)
 	if err != nil {
 		return err
@@ -179,4 +207,14 @@ func printTask(task protocol.Task) error {
 	}
 	fmt.Printf("%s\n", encoded)
 	return nil
+}
+
+func rejectNodeIdentity(cmd *command) error {
+	var err error
+	cmd.flags.Visit(func(f *flag.Flag) {
+		if f.Name == "node-dir" {
+			err = errors.New("--node-dir and --token-file cannot be combined")
+		}
+	})
+	return err
 }

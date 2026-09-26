@@ -1,0 +1,161 @@
+package httpapi
+
+import (
+	"context"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/hex"
+	"encoding/pem"
+	"errors"
+	"net/http"
+	"strings"
+
+	"agent-gateway/internal/devicestore"
+	"agent-gateway/internal/identity"
+	"agent-gateway/internal/policy"
+	"agent-gateway/internal/protocol"
+	"agent-gateway/internal/taskstore"
+)
+
+// NewSecureServer requires persistent security stores. Pre-registry certificates
+// are intentionally rejected: their owners must explicitly pair again.
+func NewSecureServer(tasks *taskstore.Store, ca *identity.CA, devices *devicestore.Store, policies *policy.Store) (*Server, error) {
+	if tasks == nil || ca == nil || devices == nil || policies == nil {
+		return nil, errors.New("all security stores and CA are required")
+	}
+	s := NewServer(tasks, ca)
+	s.devices = devices
+	s.policies = policies
+	return s, nil
+}
+func certificateFingerprint(cert *x509.Certificate) string {
+	h := sha256.Sum256(cert.Raw)
+	return hex.EncodeToString(h[:])
+}
+func (s *Server) registerCertificate(ctx context.Context, id string, certPEM []byte) error {
+	block, _ := pem.Decode(certPEM)
+	if block == nil {
+		return errors.New("invalid certificate")
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return err
+	}
+	return s.devices.Register(ctx, id, certificateFingerprint(cert), cert.NotAfter)
+}
+func (s *Server) authorizeDevice(w http.ResponseWriter, r *http.Request, id string) bool {
+	if s.devices == nil {
+		return true
+	} // Legacy constructor for module tests only.
+	if err := s.devices.Authorize(r.Context(), id, certificateFingerprint(r.TLS.VerifiedChains[0][0])); err != nil {
+		writeError(w, 401, "unauthorized", "device is not authorized")
+		return false
+	}
+	return true
+}
+
+const principalContextKey contextKey = "principal"
+
+func (s *Server) requireOperator(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.TLS == nil || s.policies == nil {
+			writeError(w, 401, "unauthorized", "HTTPS operator authentication required")
+			return
+		}
+		headers := r.Header.Values("Authorization")
+		if len(headers) != 1 {
+			writeError(w, 401, "unauthorized", "operator credential required")
+			return
+		}
+		fields := strings.Fields(headers[0])
+		if len(fields) != 2 || !strings.EqualFold(fields[0], "Bearer") || len(fields[1]) > 1024 {
+			writeError(w, 401, "unauthorized", "invalid operator credential")
+			return
+		}
+		p, err := s.policies.Authenticate(r.Context(), fields[1])
+		if err != nil {
+			writeError(w, 401, "unauthorized", "invalid operator credential")
+			return
+		}
+		next(w, r.WithContext(context.WithValue(r.Context(), principalContextKey, p)))
+	}
+}
+func operatorPrincipal(r *http.Request) policy.Principal {
+	p, _ := r.Context().Value(principalContextKey).(policy.Principal)
+	return p
+}
+func (s *Server) registerOperatorRoutes() {
+	s.mux.HandleFunc("POST /v1/operator/tasks/submit", s.requireOperator(s.operatorSubmit))
+	s.mux.HandleFunc("GET /v1/operator/tasks/{id}", s.requireOperator(s.operatorGet))
+	s.mux.HandleFunc("POST /v1/operator/tasks/{id}/cancel", s.requireOperator(s.operatorCancel))
+	s.mux.HandleFunc("POST /v1/operator/devices/{id}/revoke", s.requireOperator(s.operatorRevoke))
+}
+func (s *Server) operatorSubmit(w http.ResponseWriter, r *http.Request) {
+	var in protocol.SubmitRequest
+	if !readJSON(w, r, submitBodyLimit, &in) {
+		return
+	}
+	if policy.Authorize(operatorPrincipal(r), "task.submit", in.NodeID) != nil {
+		writeError(w, 403, "forbidden", "operation not permitted")
+		return
+	}
+	task, err := s.store.Submit(r.Context(), in)
+	if err != nil {
+		handleStoreError(w, err)
+		return
+	}
+	s.notifyNode(in.NodeID)
+	writeJSON(w, 201, task)
+}
+func (s *Server) operatorTask(w http.ResponseWriter, r *http.Request, action string) (protocol.Task, bool) {
+	task, err := s.store.Get(r.Context(), r.PathValue("id"))
+	if err != nil {
+		handleStoreError(w, err)
+		return task, false
+	}
+	if policy.Authorize(operatorPrincipal(r), action, task.NodeID) != nil {
+		writeError(w, 404, "not_found", "task not found")
+		return protocol.Task{}, false
+	}
+	return task, true
+}
+func (s *Server) operatorGet(w http.ResponseWriter, r *http.Request) {
+	if task, ok := s.operatorTask(w, r, "task.read"); ok {
+		writeJSON(w, 200, task)
+	}
+}
+func (s *Server) operatorCancel(w http.ResponseWriter, r *http.Request) {
+	task, ok := s.operatorTask(w, r, "task.cancel")
+	if !ok {
+		return
+	}
+	task, err := s.store.Cancel(r.Context(), task.ID)
+	if err != nil {
+		handleStoreError(w, err)
+		return
+	}
+	writeJSON(w, 200, task)
+}
+func (s *Server) operatorRevoke(w http.ResponseWriter, r *http.Request) {
+	p := operatorPrincipal(r)
+	if policy.Authorize(p, "device.revoke", r.PathValue("id")) != nil {
+		writeError(w, 403, "forbidden", "operation not permitted")
+		return
+	}
+	var in struct {
+		Reason string `json:"reason"`
+	}
+	if !readJSON(w, r, credentialBodyLimit, &in) {
+		return
+	}
+	if s.devices == nil {
+		writeError(w, 503, "unavailable", "device registry unavailable")
+		return
+	}
+	if err := s.devices.Revoke(r.Context(), r.PathValue("id"), p.ID, in.Reason); err != nil {
+		handleStoreError(w, err)
+		return
+	}
+	s.notifyNode(r.PathValue("id"))
+	w.WriteHeader(200)
+}

@@ -11,14 +11,6 @@
 //   - Event persistence. POST /v1/tasks/events validates the caller and the
 //     envelope but stores nothing, because no event store exists yet. The 200
 //     it returns is an acknowledgement of receipt, not a durability promise.
-//   - Revocation. Certificate chains are verified, but there is no CRL/OCSP
-//     source to consult, so a revoked device is still accepted until its
-//     certificate expires.
-//   - Invitation durability. Invitations live in memory in internal/identity,
-//     so a gateway restart invalidates every outstanding invitation.
-//   - Operator actors. Task submission and cancellation are scoped to the node
-//     that owns the work; there is no role credential for a human operator yet
-//     (docs/M2-DESIGN.md keeps admin credentials separate from device certs).
 package httpapi
 
 import (
@@ -33,7 +25,9 @@ import (
 	"sync"
 	"time"
 
+	"agent-gateway/internal/devicestore"
 	"agent-gateway/internal/identity"
+	"agent-gateway/internal/policy"
 	"agent-gateway/internal/protocol"
 	"agent-gateway/internal/taskstore"
 )
@@ -70,9 +64,11 @@ type Config struct {
 
 // Server exposes the gateway task management and node protocol over HTTP/2 with mTLS.
 type Server struct {
-	store *taskstore.Store
-	ca    *identity.CA
-	mux   *http.ServeMux
+	store    *taskstore.Store
+	ca       *identity.CA
+	mux      *http.ServeMux
+	devices  *devicestore.Store
+	policies *policy.Store
 
 	// pairLimiter bounds unauthenticated /v1/pair attempts per client address.
 	pairLimiter *pairLimiter
@@ -91,6 +87,7 @@ func NewServer(store *taskstore.Store, ca *identity.CA) *Server {
 		waiters:     make(map[string][]chan struct{}),
 	}
 	s.registerRoutes()
+	s.registerOperatorRoutes()
 	return s
 }
 
@@ -151,6 +148,9 @@ func (s *Server) requireNodeAuth(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
+		if !s.authorizeDevice(w, r, nodeID) {
+			return
+		}
 		ctx := context.WithValue(r.Context(), nodeIDContextKey, nodeID)
 		next(w, r.WithContext(ctx))
 	}
@@ -207,6 +207,12 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.devices != nil {
+		if err := s.registerCertificate(r.Context(), nodeID, certPEM); err != nil {
+			writeError(w, 500, "internal_error", "device registration failed; request a new invitation")
+			return
+		}
+	}
 	resp := protocol.PairResponse{
 		NodeID:        nodeID,
 		CertPEM:       string(certPEM),
@@ -317,6 +323,9 @@ func (s *Server) handleClaim(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	case <-waitCh:
+		if !s.authorizeDevice(w, r, nodeID) {
+			return
+		}
 		lease, err = s.store.Claim(r.Context(), nodeID, leaseDuration)
 		if err != nil {
 			if r.Context().Err() != nil {
@@ -555,7 +564,7 @@ func handleStoreError(w http.ResponseWriter, err error) {
 	case errors.Is(err, protocol.ErrLeaseExpired):
 		writeError(w, http.StatusConflict, "lease_expired", err.Error())
 	default:
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeError(w, http.StatusInternalServerError, "internal_error", "internal server error")
 	}
 }
 
