@@ -58,19 +58,33 @@
   }
 
   function showLogin(errMsg) {
-    if (loginView) loginView.classList.remove('hidden');
-    if (dashboardView) dashboardView.classList.add('hidden');
+    if (loginView) {
+      loginView.classList.remove('hidden');
+      loginView.style.display = 'flex';
+    }
+    if (dashboardView) {
+      dashboardView.classList.add('hidden');
+      dashboardView.style.display = 'none';
+    }
     if (errMsg && loginError) {
       loginError.textContent = errMsg;
       loginError.classList.remove('hidden');
+      loginError.style.display = 'block';
     } else if (loginError) {
       loginError.classList.add('hidden');
+      loginError.style.display = 'none';
     }
   }
 
   function showDashboard() {
-    if (loginView) loginView.classList.add('hidden');
-    if (dashboardView) dashboardView.classList.remove('hidden');
+    if (loginView) {
+      loginView.classList.add('hidden');
+      loginView.style.display = 'none';
+    }
+    if (dashboardView) {
+      dashboardView.classList.remove('hidden');
+      dashboardView.style.display = 'block';
+    }
     if (userBadge) userBadge.textContent = '👤 admin';
   }
 
