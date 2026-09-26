@@ -191,6 +191,22 @@ Orca 不可用：`Unable to determine Orca.app path from symlink: /usr/local/bin
 3. **安全文件传输与任务产物沙箱（基于 `os.Root`）**（`feat/file-transfer`）；
 4. **跨平台用户级系统服务守护管理（launchd / systemd）**（`feat/service`）。
 
+---
+
+## M4 里程碑：远程生态接入、智能多 Agent 路由与角色清晰化（2026-09-26）
+
+- 规范基线建立：
+  - 输出并归档 M4 里程碑任务书 [`docs/tasks/M4-PLAN.md`](docs/tasks/M4-PLAN.md)；
+  - 输出并归档大模型与开发者调用规范 [`docs/AGENT_SKILL_SPEC.md`](docs/AGENT_SKILL_SPEC.md)。
+- 主线合入（分支 `feat/m4-http-mcp`）：
+  - `internal/mcp`：新增 `wait_task_result` 同步等待工具（最长挂起 120s）与 `handoff_to_computer_agent` 外部会话智能择机工具；暴露原生 `NewStreamableHTTPHandler` 与 `NewSSEHandler`；
+  - `internal/httpapi`：挂载 `/mcp` HTTP 端点（受 Bearer Token 强鉴权保护，电脑端豆包与远程 MCP 客户端可直接配置 URL 访问）；提供 `GET /v1/operator/tasks/{id}/wait` 与 `GET /v1/tasks/{id}/wait` 长轮询同步等待；提供 `GET /api/public/status`（微控制器免认证轻量状态）与 `GET /onboarding.md`（带网关实际地址替换的 AI 自助对接页面）；
+  - `internal/node`：实现宿主机 Agent 软件与 CLI 探测器 `discovery.go`，兼容 `instruction` 与 `prompt` 回退；
+  - `cmd/mesh`：装配 MCP HTTP 服务，重构 CLI 认知层级，区分 `[Control Plane / Gateway]` 与 `[Worker Node]`，消除 `mesh` 对等误解；
+  - 验证结果：全包单元测试与 `-race` 竞态检测全部通过、`gofmt` 规范、`go vet` 零告警、Linux/Windows 交叉编译成功；
+  - 交付验收报告 `docs/reports/m4-http-mcp.md`。
+
+
 
 
 
