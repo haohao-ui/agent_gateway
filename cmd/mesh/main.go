@@ -17,26 +17,33 @@ import (
 	"syscall"
 )
 
-const usage = `mesh is the agent gateway.
+const usage = `agent-gateway (or mesh) is the unified agent gateway and worker CLI.
 
 usage:
-  mesh server [flags]        run the gateway: pairing, mTLS task API
-  mesh invite [flags]        mint another pairing invitation for a running gateway
-  mesh pair [flags]          enrol this machine with a gateway (node side)
-  mesh node [flags]          run the task loop for this machine
-  mesh task [flags] <verb>   submit, get or cancel a task
+  agent-gateway <command> [flags]
 
-  mesh credential issue|revoke   manage operator credentials locally
-  mesh device list|revoke        list or revoke enrolled devices
-  mesh doctor [flags]            diagnose node or server environment and connectivity
-  mesh mcp [flags]               run Model Context Protocol (MCP) server over stdio
-  mesh file <action> [flags]     manage task artifacts (upload, download, list, delete)
-  mesh service <action> [flags]  manage background system service (install, uninstall, status)
+[Control Plane / Gateway]
+  server [flags]                  run the gateway: pairing, mTLS task API, WebUI and /mcp
+  invite [flags]                  mint another pairing invitation for a running gateway
+  credential issue|revoke         manage operator credentials locally
+  device list|revoke              list or revoke enrolled devices
+
+[Worker Node]
+  pair [flags]                    enrol this machine with a gateway (node side)
+  node [flags]                    run the task loop for this machine
+  node list [flags]               query enrolled node/device status
+
+[Operator & Integrations]
+  task [flags] <verb>             submit, get, wait or cancel a task
+  file <action> [flags]           manage task artifacts (upload, download, list, delete)
+  mcp [flags]                     run Model Context Protocol (MCP) server over stdio
+  doctor [flags]                  diagnose node or server environment and connectivity
+  service <action> [flags]        manage background system service (install, uninstall, status)
 
 Common flags:
   --log-level debug|info|warn|error   (default info)
 
-Run "mesh <command> --help" for the flags of one command.
+Run "agent-gateway <command> --help" for detailed flags.
 `
 
 func main() {
