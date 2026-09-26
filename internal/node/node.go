@@ -66,6 +66,7 @@ func New(cfg Config, dir string, log *slog.Logger) (*Node, error) {
 	if err := cfg.normalize(); err != nil {
 		return nil, err
 	}
+	cfg.PopulateDefaultCapabilities()
 	if dir == "" {
 		return nil, fmt.Errorf("%w: node directory is required", protocol.ErrInvalid)
 	}

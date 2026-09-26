@@ -125,3 +125,102 @@ func DiscoverInstalledAgents(configuredAdapters []string) []AgentSoftware {
 	})
 	return result
 }
+
+// DefaultShellAdapter detects a suitable local shell (bash, sh or cmd.exe) for running instructions.
+func DefaultShellAdapter() (string, []string) {
+	if runtime.GOOS == "windows" {
+		if comspec := os.Getenv("COMSPEC"); comspec != "" {
+			return comspec, []string{"/c", "{instruction}"}
+		}
+		return "cmd.exe", []string{"/c", "{instruction}"}
+	}
+	candidates := []string{"/bin/bash", "/usr/bin/bash", "/bin/sh", "/usr/bin/sh"}
+	for _, candidate := range candidates {
+		if fi, err := os.Stat(candidate); err == nil && !fi.IsDir() {
+			return candidate, []string{"-c", "{instruction}"}
+		}
+	}
+	if path, err := exec.LookPath("bash"); err == nil {
+		if abs, err := filepath.Abs(path); err == nil {
+			return abs, []string{"-c", "{instruction}"}
+		}
+	}
+	if path, err := exec.LookPath("sh"); err == nil {
+		if abs, err := filepath.Abs(path); err == nil {
+			return abs, []string{"-c", "{instruction}"}
+		}
+	}
+	return "/bin/echo", []string{"{instruction}"}
+}
+
+// PopulateDefaultCapabilities registers runnable execution adapters for detected tools.
+func (c *Config) PopulateDefaultCapabilities() {
+	existing := make(map[string]bool)
+	for i := range c.Capabilities {
+		existing[c.Capabilities[i].Name] = true
+	}
+	if !existing["agent.run"] {
+		shell, args := DefaultShellAdapter()
+		if shell != "" {
+			c.Capabilities = append(c.Capabilities, Capability{
+				Name:           "agent.run",
+				Version:        1,
+				InstructionKey: defaultInstructionKey,
+				Adapter: Adapter{
+					Executable: shell,
+					Args:       args,
+				},
+			})
+			existing["agent.run"] = true
+		}
+	}
+
+	// 2. Discover tool paths and populate capabilities
+	tryAdd := func(name string, findCmd string, args []string) {
+		if existing[name] {
+			return
+		}
+		var binPath string
+		if p, err := exec.LookPath(findCmd); err == nil && p != "" {
+			binPath = p
+		} else {
+			home, _ := os.UserHomeDir()
+			commonDirs := []string{
+				"/usr/local/bin",
+				"/opt/homebrew/bin",
+				"/usr/bin",
+				"/bin",
+				filepath.Join(home, ".local", "bin"),
+			}
+			for _, dir := range commonDirs {
+				candidate := filepath.Join(dir, findCmd)
+				if fi, err := os.Stat(candidate); err == nil && !fi.IsDir() {
+					binPath = candidate
+					break
+				}
+			}
+		}
+		if binPath != "" {
+			if abs, err := filepath.Abs(binPath); err == nil {
+				c.Capabilities = append(c.Capabilities, Capability{
+					Name:           name,
+					Version:        1,
+					InstructionKey: defaultInstructionKey,
+					Adapter: Adapter{
+						Executable: abs,
+						Args:       args,
+					},
+				})
+				existing[name] = true
+			}
+		}
+	}
+
+	tryAdd("bash", "bash", []string{"-c", "{instruction}"})
+	tryAdd("sh", "sh", []string{"-c", "{instruction}"})
+	tryAdd("python3", "python3", []string{"-c", "{instruction}"})
+	tryAdd("python", "python", []string{"-c", "{instruction}"})
+	tryAdd("codex", "codex", []string{"exec", "--skip-git-repo-check", "--", "{instruction}"})
+	tryAdd("hermes", "hermes", []string{"chat", "-m", "{instruction}"})
+	tryAdd("claude", "claude", []string{"-p", "{instruction}"})
+}

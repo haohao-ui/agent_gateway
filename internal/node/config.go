@@ -185,12 +185,29 @@ func (c *Config) runnerConfig(cap *Capability, defaultWorkDir string) runner.Con
 	if workDir == "" {
 		workDir = defaultWorkDir
 	}
+	var env map[string]string
+	if cap.Adapter.Env != nil {
+		env = cap.Adapter.Env
+	} else {
+		env = make(map[string]string)
+		if hostPath := os.Getenv("PATH"); hostPath != "" {
+			env["PATH"] = hostPath
+		} else {
+			env["PATH"] = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+		}
+		if home, err := os.UserHomeDir(); err == nil && home != "" {
+			env["HOME"] = home
+		}
+		if user := os.Getenv("USER"); user != "" {
+			env["USER"] = user
+		}
+	}
 	return runner.Config{
 		Executable:     cap.Adapter.Executable,
 		Args:           append([]string(nil), cap.Adapter.Args...),
 		Stdin:          cap.Adapter.Stdin,
 		WorkDir:        workDir,
-		Env:            cap.Adapter.Env,
+		Env:            env,
 		MaxOutputBytes: c.MaxOutputBytes,
 		GracePeriod:    time.Duration(c.GraceSeconds) * time.Second,
 	}
