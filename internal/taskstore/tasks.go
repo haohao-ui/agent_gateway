@@ -146,6 +146,35 @@ func (s *Store) Cancel(ctx context.Context, taskID string) (protocol.Task, error
 	return current, nil
 }
 
+// List returns the most recent tasks up to limit entries.
+func (s *Store) List(ctx context.Context, limit int) ([]protocol.Task, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 100
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, node_id, capability, capability_version, input, timeout_seconds,
+		 state, attempt_id, lease_expires_at, result_state, result_text,
+		 result_exit_code, result_error_code, result_truncated, created_at, updated_at
+		 FROM tasks ORDER BY created_at DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, dbError("list tasks", err)
+	}
+	defer rows.Close()
+
+	var tasks []protocol.Task
+	for rows.Next() {
+		t, err := scanTask(rows)
+		if err != nil {
+			return nil, dbError("scan task", err)
+		}
+		tasks = append(tasks, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, dbError("list tasks", err)
+	}
+	return tasks, nil
+}
+
 // lookupIdempotency returns the task recorded for a (node, key) pair together
 // with the hash of the payload it was created with. An empty task ID means the
 // key has not been used.

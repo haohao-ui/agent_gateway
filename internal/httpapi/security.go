@@ -221,12 +221,17 @@ func (s *Server) operatorResolve(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) operatorList(w http.ResponseWriter, r *http.Request) {
 	stateFilter := r.URL.Query().Get("state")
-	if stateFilter != "" && stateFilter != "unknown" {
-		writeError(w, 400, "invalid_argument", "only state=unknown is supported")
+	p := operatorPrincipal(r)
+	var tasks []protocol.Task
+	var err error
+	if stateFilter == "unknown" {
+		tasks, err = s.store.ListUnknown(r.Context(), 100)
+	} else if stateFilter == "" {
+		tasks, err = s.store.List(r.Context(), 100)
+	} else {
+		writeError(w, 400, "invalid_argument", "only state=unknown is supported for filtering")
 		return
 	}
-	p := operatorPrincipal(r)
-	tasks, err := s.store.ListUnknown(r.Context(), 100)
 	if err != nil {
 		handleStoreError(w, err)
 		return
