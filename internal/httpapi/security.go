@@ -89,6 +89,7 @@ func operatorPrincipal(r *http.Request) policy.Principal {
 func (s *Server) registerOperatorRoutes() {
 	s.mux.HandleFunc("POST /v1/operator/tasks/submit", s.requireOperator(s.operatorSubmit))
 	s.mux.HandleFunc("GET /v1/operator/tasks/{id}", s.requireOperator(s.operatorGet))
+	s.mux.HandleFunc("GET /v1/operator/tasks/{id}/wait", s.requireOperator(s.operatorWait))
 	s.mux.HandleFunc("POST /v1/operator/tasks/{id}/cancel", s.requireOperator(s.operatorCancel))
 	s.mux.HandleFunc("POST /v1/operator/tasks/{id}/requeue", s.requireOperator(s.operatorRequeue))
 	s.mux.HandleFunc("POST /v1/operator/tasks/{id}/resolve", s.requireOperator(s.operatorResolve))

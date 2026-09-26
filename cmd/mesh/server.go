@@ -18,6 +18,7 @@ import (
 	"agent-gateway/internal/doctor"
 	"agent-gateway/internal/httpapi"
 	"agent-gateway/internal/identity"
+	"agent-gateway/internal/mcp"
 	"agent-gateway/internal/policy"
 	"agent-gateway/internal/protocol"
 	"agent-gateway/internal/taskstore"
@@ -119,6 +120,13 @@ func serveGateway(ctx context.Context, opts gatewayOptions, onReady func(gateway
 	}
 	defer artifacts.Close()
 	api.SetArtifactStore(artifacts)
+
+	localMCP := &mcp.LocalBackend{
+		Tasks:   store,
+		Devices: devices,
+		DataDir: opts.DataDir,
+	}
+	api.SetMCPHandler(mcp.NewStreamableHTTPHandler(localMCP))
 
 	tlsConfig, err := api.BuildTLSConfig(opts.Hosts)
 	if err != nil {

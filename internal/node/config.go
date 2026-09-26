@@ -206,7 +206,17 @@ func instruction(cap *Capability, input []byte) (string, error) {
 	}
 	raw, ok := fields[cap.InstructionKey]
 	if !ok {
-		return "", fmt.Errorf("%w: task input has no %q field", protocol.ErrInvalid, cap.InstructionKey)
+		// Fall back to standard keys: "instruction" then "prompt"
+		if alt, hasAlt := fields["instruction"]; hasAlt {
+			raw = alt
+			ok = true
+		} else if alt, hasAlt := fields["prompt"]; hasAlt {
+			raw = alt
+			ok = true
+		}
+	}
+	if !ok {
+		return "", fmt.Errorf("%w: task input has no %q or \"instruction\" field", protocol.ErrInvalid, cap.InstructionKey)
 	}
 	var text string
 	if err := json.Unmarshal(raw, &text); err != nil {

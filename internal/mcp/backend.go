@@ -24,6 +24,7 @@ import (
 type GatewayBackend interface {
 	SubmitTask(ctx context.Context, nodeID, capability string, input []byte, timeoutSec int) (protocol.Task, error)
 	GetTask(ctx context.Context, taskID string) (protocol.Task, error)
+	WaitTask(ctx context.Context, taskID string, timeout time.Duration) (protocol.Task, error)
 	CancelTask(ctx context.Context, taskID string) (protocol.Task, error)
 	ListDevices(ctx context.Context) ([]devicestore.Device, error)
 	Diagnose(ctx context.Context) (doctor.Report, error)
@@ -55,6 +56,41 @@ func (l *LocalBackend) GetTask(ctx context.Context, taskID string) (protocol.Tas
 		return protocol.Task{}, errors.New("task store not initialized")
 	}
 	return l.Tasks.Get(ctx, taskID)
+}
+
+func (l *LocalBackend) WaitTask(ctx context.Context, taskID string, timeout time.Duration) (protocol.Task, error) {
+	if l.Tasks == nil {
+		return protocol.Task{}, errors.New("task store not initialized")
+	}
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	if timeout > 120*time.Second {
+		timeout = 120 * time.Second
+	}
+
+	deadline := time.Now().Add(timeout)
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		task, err := l.Tasks.Get(ctx, taskID)
+		if err != nil {
+			return protocol.Task{}, err
+		}
+		switch task.State {
+		case protocol.Succeeded, protocol.Failed, protocol.Cancelled, protocol.Unknown:
+			return task, nil
+		}
+		if time.Now().After(deadline) {
+			return task, nil
+		}
+		select {
+		case <-ctx.Done():
+			return task, ctx.Err()
+		case <-ticker.C:
+		}
+	}
 }
 
 func (l *LocalBackend) CancelTask(ctx context.Context, taskID string) (protocol.Task, error) {
@@ -104,7 +140,7 @@ func NewClientBackend(baseURL, token string, caCertPEM []byte) (*ClientBackend, 
 			TLSClientConfig:   tlsConfig,
 			ForceAttemptHTTP2: true,
 		},
-		Timeout: 30 * time.Second,
+		Timeout: 130 * time.Second, // Long enough for wait_task_result up to 120s
 	}
 
 	return &ClientBackend{
@@ -169,6 +205,17 @@ func (c *ClientBackend) SubmitTask(ctx context.Context, nodeID, capability strin
 func (c *ClientBackend) GetTask(ctx context.Context, taskID string) (protocol.Task, error) {
 	var task protocol.Task
 	err := c.do(ctx, "GET", "/v1/operator/tasks/"+taskID, nil, &task)
+	return task, err
+}
+
+func (c *ClientBackend) WaitTask(ctx context.Context, taskID string, timeout time.Duration) (protocol.Task, error) {
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	secs := int(timeout.Seconds())
+	var task protocol.Task
+	path := fmt.Sprintf("/v1/operator/tasks/%s/wait?timeout=%d", taskID, secs)
+	err := c.do(ctx, "GET", path, nil, &task)
 	return task, err
 }
 

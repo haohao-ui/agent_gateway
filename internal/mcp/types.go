@@ -35,6 +35,21 @@ type GetTaskOutput struct {
 	UpdatedAt string `json:"updated_at"`
 }
 
+// WaitTaskInput defines input arguments for wait_task_result tool.
+type WaitTaskInput struct {
+	TaskID         string `json:"task_id" jsonschema:"The unique task ID to wait for"`
+	TimeoutSeconds int    `json:"timeout_seconds,omitempty" jsonschema:"Maximum seconds to wait (default 30, max 120)"`
+}
+
+// HandoffInput defines input arguments for handoff_to_computer_agent tool.
+type HandoffInput struct {
+	Instruction    string `json:"instruction" jsonschema:"The task instruction for the computer agent"`
+	Agent          string `json:"agent,omitempty" jsonschema:"Agent capability or adapter name (defaults to agent.run)"`
+	TargetNode     string `json:"target_node,omitempty" jsonschema:"Target node ID (optional; gateway auto-selects if omitted)"`
+	Context        string `json:"context,omitempty" jsonschema:"Optional conversation or mobile chat background context"`
+	TimeoutSeconds int    `json:"timeout_seconds,omitempty" jsonschema:"Task timeout in seconds (default 120)"`
+}
+
 // CancelTaskInput defines input arguments for the task_cancel tool.
 type CancelTaskInput struct {
 	TaskID string `json:"task_id" jsonschema:"The unique task ID to cancel"`

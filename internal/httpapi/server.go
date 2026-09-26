@@ -76,6 +76,7 @@ type Server struct {
 	artifacts  *artifact.Store
 	dataDir    string
 	doctorFunc DoctorFunc
+	mcpHandler http.Handler
 
 	// pairLimiter bounds unauthenticated /v1/pair attempts per client address.
 	pairLimiter *pairLimiter
@@ -127,6 +128,14 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /v1/events/stream", s.handleSSEStreams)
 	s.mux.HandleFunc("GET /v1/doctor", s.handleWebDoctor)
 
+	// Public status and AI onboarding documentation
+	s.mux.HandleFunc("GET /api/public/status", s.handlePublicStatus)
+	s.mux.HandleFunc("GET /onboarding.md", s.handleOnboardingMD)
+
+	// Streamable HTTP / SSE MCP protocol endpoint
+	s.mux.HandleFunc("/mcp", s.handleMCP)
+	s.mux.HandleFunc("/mcp/", s.handleMCP)
+
 	// Public pair endpoint (protected by server TLS, an invitation token and
 	// the per-address rate limiter).
 	s.mux.HandleFunc("POST /v1/pair", s.handlePair)
@@ -134,6 +143,7 @@ func (s *Server) registerRoutes() {
 	// Every route below requires a verified client certificate.
 	s.mux.HandleFunc("POST /v1/tasks/submit", s.requireNodeAuth(s.handleSubmit))
 	s.mux.HandleFunc("GET /v1/tasks/{id}", s.requireNodeAuth(s.handleGetTask))
+	s.mux.HandleFunc("GET /v1/tasks/{id}/wait", s.requireNodeAuth(s.handleWaitTask))
 	s.mux.HandleFunc("POST /v1/tasks/{id}/cancel", s.requireNodeAuth(s.handleCancelTask))
 	s.mux.HandleFunc("POST /v1/tasks/claim", s.requireNodeAuth(s.handleClaim))
 	s.mux.HandleFunc("POST /v1/tasks/start", s.requireNodeAuth(s.handleStart))

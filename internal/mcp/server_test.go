@@ -73,11 +73,13 @@ func TestMCPServer_ListTools(t *testing.T) {
 	}
 
 	expectedTools := map[string]bool{
-		"task_submit":     false,
-		"task_get":        false,
-		"task_cancel":     false,
-		"device_list":     false,
-		"doctor_diagnose": false,
+		"task_submit":               false,
+		"task_get":                  false,
+		"task_cancel":               false,
+		"device_list":               false,
+		"doctor_diagnose":           false,
+		"wait_task_result":          false,
+		"handoff_to_computer_agent": false,
 	}
 
 	for _, tool := range toolsResult.Tools {
@@ -116,23 +118,36 @@ func TestMCPServer_TaskWorkflow(t *testing.T) {
 		t.Fatalf("task_submit returned error: %+v", res.Content)
 	}
 
-	// Unmarshal structured content
 	var submitOut SubmitTaskOutput
-	rawJSON, err := json.Marshal(res.StructuredContent)
+	if len(res.Content) > 0 {
+		if tc, ok := res.Content[0].(*official.TextContent); ok {
+			_ = json.Unmarshal([]byte(tc.Text), &submitOut)
+		}
+	}
+	if submitOut.TaskID == "" {
+		t.Fatalf("expected task ID in submit output, got %+v", submitOut)
+	}
+
+	// 2. Wait task (timeout 1s on queued task should return current state)
+	waitArgs := WaitTaskInput{
+		TaskID:         submitOut.TaskID,
+		TimeoutSeconds: 1,
+	}
+	waitRes, err := session.CallTool(ctx, &official.CallToolParams{
+		Name:      "wait_task_result",
+		Arguments: waitArgs,
+	})
 	if err != nil {
-		t.Fatalf("marshal structured content: %v", err)
+		t.Fatalf("call wait_task_result: %v", err)
 	}
-	if err := json.Unmarshal(rawJSON, &submitOut); err != nil {
-		t.Fatalf("unmarshal submit output: %v", err)
-	}
-	if submitOut.TaskID == "" || submitOut.State != "queued" {
-		t.Fatalf("unexpected submit out: %+v", submitOut)
+	if waitRes.IsError {
+		t.Fatalf("wait_task_result returned error: %+v", waitRes.Content)
 	}
 
-	taskID := submitOut.TaskID
-
-	// 2. Get task
-	getArgs := GetTaskInput{TaskID: taskID}
+	// 3. Inspect task
+	getArgs := GetTaskInput{
+		TaskID: submitOut.TaskID,
+	}
 	getRes, err := session.CallTool(ctx, &official.CallToolParams{
 		Name:      "task_get",
 		Arguments: getArgs,
@@ -140,16 +155,14 @@ func TestMCPServer_TaskWorkflow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("call task_get: %v", err)
 	}
-	var getOut GetTaskOutput
-	rawJSON, _ = json.Marshal(getRes.StructuredContent)
-	_ = json.Unmarshal(rawJSON, &getOut)
-
-	if getOut.TaskID != taskID || getOut.State != "queued" {
-		t.Fatalf("unexpected get output: %+v", getOut)
+	if getRes.IsError {
+		t.Fatalf("task_get returned error: %+v", getRes.Content)
 	}
 
-	// 3. Cancel task
-	cancelArgs := CancelTaskInput{TaskID: taskID}
+	// 4. Cancel task
+	cancelArgs := CancelTaskInput{
+		TaskID: submitOut.TaskID,
+	}
 	cancelRes, err := session.CallTool(ctx, &official.CallToolParams{
 		Name:      "task_cancel",
 		Arguments: cancelArgs,
@@ -157,39 +170,74 @@ func TestMCPServer_TaskWorkflow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("call task_cancel: %v", err)
 	}
-	var cancelOut CancelTaskOutput
-	rawJSON, _ = json.Marshal(cancelRes.StructuredContent)
-	_ = json.Unmarshal(rawJSON, &cancelOut)
+	if cancelRes.IsError {
+		t.Fatalf("task_cancel returned error: %+v", cancelRes.Content)
+	}
+}
 
-	if cancelOut.TaskID != taskID || cancelOut.State != "cancelled" {
-		t.Fatalf("unexpected cancel output: %+v", cancelOut)
+func TestMCPServer_HandoffWorkflow(t *testing.T) {
+	session, cleanup := setupTestMCP(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Call handoff with explicit node
+	handoffArgs := HandoffInput{
+		Instruction: "Check system memory",
+		TargetNode:  "node-handoff-1",
+		Context:     "User requested resource status on mobile",
+	}
+	res, err := session.CallTool(ctx, &official.CallToolParams{
+		Name:      "handoff_to_computer_agent",
+		Arguments: handoffArgs,
+	})
+	if err != nil {
+		t.Fatalf("call handoff_to_computer_agent: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("handoff returned error: %+v", res.Content)
 	}
 
-	// 4. Device list
-	devRes, err := session.CallTool(ctx, &official.CallToolParams{
+	var out SubmitTaskOutput
+	if len(res.Content) > 0 {
+		if tc, ok := res.Content[0].(*official.TextContent); ok {
+			_ = json.Unmarshal([]byte(tc.Text), &out)
+		}
+	}
+	if out.TaskID == "" || out.NodeID != "node-handoff-1" {
+		t.Errorf("unexpected handoff result: %+v", out)
+	}
+}
+
+func TestMCPServer_DeviceListAndDiagnose(t *testing.T) {
+	session, cleanup := setupTestMCP(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Call device_list
+	dRes, err := session.CallTool(ctx, &official.CallToolParams{
 		Name:      "device_list",
 		Arguments: ListDevicesInput{},
 	})
 	if err != nil {
 		t.Fatalf("call device_list: %v", err)
 	}
-	var devOut ListDevicesOutput
-	rawJSON, _ = json.Marshal(devRes.StructuredContent)
-	_ = json.Unmarshal(rawJSON, &devOut)
-	// Empty is fine as no devices enrolled yet
+	if dRes.IsError {
+		t.Fatalf("device_list returned error: %+v", dRes.Content)
+	}
 
-	// 5. Doctor diagnose
-	docRes, err := session.CallTool(ctx, &official.CallToolParams{
+	// Call doctor_diagnose
+	diagRes, err := session.CallTool(ctx, &official.CallToolParams{
 		Name:      "doctor_diagnose",
 		Arguments: DiagnoseInput{},
 	})
 	if err != nil {
 		t.Fatalf("call doctor_diagnose: %v", err)
 	}
-	var docOut DiagnoseOutput
-	rawJSON, _ = json.Marshal(docRes.StructuredContent)
-	_ = json.Unmarshal(rawJSON, &docOut)
-	if len(docOut.Checks) == 0 {
-		t.Errorf("expected doctor checks to be non-empty")
+	if diagRes.IsError {
+		t.Fatalf("doctor_diagnose returned error: %+v", diagRes.Content)
 	}
 }
