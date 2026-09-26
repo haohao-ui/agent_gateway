@@ -127,9 +127,10 @@ func serveGateway(ctx context.Context, opts gatewayOptions, onReady func(gateway
 	api.SetArtifactStore(artifacts)
 
 	localMCP := &mcp.LocalBackend{
-		Tasks:   store,
-		Devices: devices,
-		DataDir: opts.DataDir,
+		Tasks:       store,
+		Devices:     devices,
+		DataDir:     opts.DataDir,
+		NodeRuntime: api.GetNodeRuntime(),
 	}
 	api.SetMCPHandler(mcp.NewSSEHandler(localMCP))
 

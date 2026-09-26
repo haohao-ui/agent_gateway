@@ -433,10 +433,25 @@
     document.getElementById('modal-task-input').textContent = inputStr || '-';
 
     const outputEl = document.getElementById('modal-task-output');
-    if (t.result && t.result.output) {
-      outputEl.textContent = t.result.output;
+    if (t.result) {
+      let content = t.result.text || t.result.output || '';
+      let meta = [];
+      if (typeof t.result.exit_code === 'number') {
+        meta.push(`[进程退出码: ${t.result.exit_code}]`);
+      }
+      if (t.result.error_code) {
+        meta.push(`[错误码: ${t.result.error_code}]`);
+      }
+      if (t.result.truncated) {
+        meta.push(`[输出过长已截断]`);
+      }
+      if (meta.length > 0) {
+        outputEl.textContent = meta.join(' ') + '\n\n' + (content || '(无标准输出)');
+      } else {
+        outputEl.textContent = content || '(无标准输出)';
+      }
     } else {
-      outputEl.textContent = t.state === 'running' ? '正在执行中，等待输出流...\n' : '暂无输出日志\n';
+      outputEl.textContent = (t.state === 'running' || t.state === 'leased') ? '正在执行中，等待节点回报...\n' : '暂无输出日志\n';
     }
 
     taskModal.classList.remove('hidden');

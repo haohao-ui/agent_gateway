@@ -51,11 +51,8 @@ func NewSSEHandler(backend GatewayBackend) http.Handler {
 }
 
 func registerTools(s *official.Server, backend GatewayBackend) {
-	// 1. task_submit
-	official.AddTool(s, &official.Tool{
-		Name:        "task_submit",
-		Description: "Submit a new execution task to a specific worker node on the mesh network.",
-	}, func(ctx context.Context, req *official.CallToolRequest, in SubmitTaskInput) (*official.CallToolResult, SubmitTaskOutput, error) {
+	// 1. task_submit / submit_task handler
+	submitHandler := func(ctx context.Context, req *official.CallToolRequest, in SubmitTaskInput) (*official.CallToolResult, SubmitTaskOutput, error) {
 		capability := in.Capability
 		if capability == "" {
 			capability = "agent.run"
@@ -86,13 +83,18 @@ func registerTools(s *official.Server, backend GatewayBackend) {
 			Message:   fmt.Sprintf("Task %s successfully enqueued for node %s", task.ID, task.NodeID),
 		}
 		return nil, out, nil
-	})
-
-	// 2. task_get
+	}
 	official.AddTool(s, &official.Tool{
-		Name:        "task_get",
-		Description: "Inspect the current status, attempt progress, and execution output of a task.",
-	}, func(ctx context.Context, req *official.CallToolRequest, in GetTaskInput) (*official.CallToolResult, GetTaskOutput, error) {
+		Name:        "task_submit",
+		Description: "Submit a new execution task to a specific worker node on the mesh network.",
+	}, submitHandler)
+	official.AddTool(s, &official.Tool{
+		Name:        "submit_task",
+		Description: "Alias for task_submit. Queue work on a registered computer/agent and return task ID.",
+	}, submitHandler)
+
+	// 2. task_get / get_task_result handler
+	getHandler := func(ctx context.Context, req *official.CallToolRequest, in GetTaskInput) (*official.CallToolResult, GetTaskOutput, error) {
 		task, err := backend.GetTask(ctx, in.TaskID)
 		if err != nil {
 			return nil, GetTaskOutput{}, fmt.Errorf("get task failed: %w", err)
@@ -112,7 +114,15 @@ func registerTools(s *official.Server, backend GatewayBackend) {
 			out.Error = task.Result.ErrorCode
 		}
 		return nil, out, nil
-	})
+	}
+	official.AddTool(s, &official.Tool{
+		Name:        "task_get",
+		Description: "Inspect the current status, attempt progress, and execution output of a task.",
+	}, getHandler)
+	official.AddTool(s, &official.Tool{
+		Name:        "get_task_result",
+		Description: "Alias for task_get. Fetch status and eventual execution result using the task ID.",
+	}, getHandler)
 
 	// 3. wait_task_result
 	official.AddTool(s, &official.Tool{
@@ -199,11 +209,8 @@ func registerTools(s *official.Server, backend GatewayBackend) {
 		return nil, out, nil
 	})
 
-	// 5. task_cancel
-	official.AddTool(s, &official.Tool{
-		Name:        "task_cancel",
-		Description: "Request cancellation of a queued, leased or running task.",
-	}, func(ctx context.Context, req *official.CallToolRequest, in CancelTaskInput) (*official.CallToolResult, CancelTaskOutput, error) {
+	// 5. task_cancel / cancel_task handler
+	cancelHandler := func(ctx context.Context, req *official.CallToolRequest, in CancelTaskInput) (*official.CallToolResult, CancelTaskOutput, error) {
 		task, err := backend.CancelTask(ctx, in.TaskID)
 		if err != nil {
 			return nil, CancelTaskOutput{}, fmt.Errorf("cancel task failed: %w", err)
@@ -215,13 +222,24 @@ func registerTools(s *official.Server, backend GatewayBackend) {
 			Message: fmt.Sprintf("Task %s cancellation requested (state: %s)", task.ID, task.State),
 		}
 		return nil, out, nil
-	})
-
-	// 6. device_list
+	}
 	official.AddTool(s, &official.Tool{
-		Name:        "device_list",
-		Description: "List all enrolled worker machines/nodes and their certificate authorization status.",
-	}, func(ctx context.Context, req *official.CallToolRequest, in ListDevicesInput) (*official.CallToolResult, ListDevicesOutput, error) {
+		Name:        "task_cancel",
+		Description: "Request cancellation of a queued, leased or running task.",
+	}, cancelHandler)
+	official.AddTool(s, &official.Tool{
+		Name:        "cancel_task",
+		Description: "Alias for task_cancel. Request cancellation of an existing task.",
+	}, cancelHandler)
+
+	// 6. device_list / list_devices handler
+	deviceListHandler := func(ctx context.Context, req *official.CallToolRequest, in ListDevicesInput) (*official.CallToolResult, ListDevicesOutput, error) {
+		if detailed, ok := backend.(DetailedDeviceProvider); ok {
+			items, err := detailed.ListDetailedDevices(ctx)
+			if err == nil {
+				return nil, ListDevicesOutput{Devices: items}, nil
+			}
+		}
 		devices, err := backend.ListDevices(ctx)
 		if err != nil {
 			return nil, ListDevicesOutput{}, fmt.Errorf("list devices failed: %w", err)
@@ -237,7 +255,15 @@ func registerTools(s *official.Server, backend GatewayBackend) {
 			})
 		}
 		return nil, ListDevicesOutput{Devices: items}, nil
-	})
+	}
+	official.AddTool(s, &official.Tool{
+		Name:        "device_list",
+		Description: "List all enrolled worker machines/nodes, online status, and detected tool capabilities.",
+	}, deviceListHandler)
+	official.AddTool(s, &official.Tool{
+		Name:        "list_devices",
+		Description: "Alias for device_list. List computers, detected installed software, and runnable agent adapters.",
+	}, deviceListHandler)
 
 	// 7. doctor_diagnose
 	official.AddTool(s, &official.Tool{

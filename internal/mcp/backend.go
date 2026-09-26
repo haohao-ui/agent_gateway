@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"agent-gateway/internal/devicestore"
@@ -30,11 +31,17 @@ type GatewayBackend interface {
 	Diagnose(ctx context.Context) (doctor.Report, error)
 }
 
+// DetailedDeviceProvider allows backends to enrich device listing with runtime health.
+type DetailedDeviceProvider interface {
+	ListDetailedDevices(ctx context.Context) ([]DeviceItem, error)
+}
+
 // LocalBackend directly invokes store methods within the same process.
 type LocalBackend struct {
-	Tasks   *taskstore.Store
-	Devices *devicestore.Store
-	DataDir string
+	Tasks       *taskstore.Store
+	Devices     *devicestore.Store
+	DataDir     string
+	NodeRuntime *sync.Map
 }
 
 func (l *LocalBackend) SubmitTask(ctx context.Context, nodeID, capability string, input []byte, timeoutSec int) (protocol.Task, error) {
@@ -105,6 +112,52 @@ func (l *LocalBackend) ListDevices(ctx context.Context) ([]devicestore.Device, e
 		return nil, errors.New("device store not initialized")
 	}
 	return l.Devices.List(ctx)
+}
+
+func (l *LocalBackend) ListDetailedDevices(ctx context.Context) ([]DeviceItem, error) {
+	devices, err := l.ListDevices(ctx)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	var items []DeviceItem
+	for _, d := range devices {
+		item := DeviceItem{
+			NodeID:      d.NodeID,
+			Fingerprint: d.Fingerprint,
+			Revoked:     d.Revoked,
+			ExpiresAt:   d.ExpiresAt.UTC().Format(time.RFC3339),
+			Online:      false,
+		}
+		if l.NodeRuntime != nil {
+			if val, ok := l.NodeRuntime.Load(d.NodeID); ok {
+				if rawJSON, err := json.Marshal(val); err == nil {
+					var info struct {
+						Version  string                   `json:"version"`
+						OS       string                   `json:"os"`
+						Arch     string                   `json:"arch"`
+						Agents   []protocol.AgentSoftware `json:"agents"`
+						LastSeen time.Time                `json:"last_seen"`
+					}
+					if err := json.Unmarshal(rawJSON, &info); err == nil {
+						item.Version = info.Version
+						item.OS = info.OS
+						item.Arch = info.Arch
+						for _, a := range info.Agents {
+							if a.Runnable {
+								item.Agents = append(item.Agents, a.ID)
+							}
+						}
+						if !d.Revoked && now.Sub(info.LastSeen) < 90*time.Second {
+							item.Online = true
+						}
+					}
+				}
+			}
+		}
+		items = append(items, item)
+	}
+	return items, nil
 }
 
 func (l *LocalBackend) Diagnose(ctx context.Context) (doctor.Report, error) {

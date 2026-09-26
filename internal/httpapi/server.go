@@ -140,6 +140,11 @@ func (s *Server) SetDoctorFunc(fn DoctorFunc) {
 	s.doctorFunc = fn
 }
 
+// GetNodeRuntime returns the server's sync.Map of node runtime metadata.
+func (s *Server) GetNodeRuntime() *sync.Map {
+	return &s.nodeRuntime
+}
+
 // Hub returns the server's event hub for subscribing to or emitting events.
 func (s *Server) Hub() *events.Hub {
 	return s.hub

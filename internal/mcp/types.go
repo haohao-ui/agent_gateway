@@ -67,10 +67,15 @@ type ListDevicesInput struct{}
 
 // DeviceItem represents summary of one enrolled node.
 type DeviceItem struct {
-	NodeID      string `json:"node_id"`
-	Fingerprint string `json:"fingerprint"`
-	Revoked     bool   `json:"revoked"`
-	ExpiresAt   string `json:"expires_at"`
+	NodeID      string   `json:"node_id"`
+	Fingerprint string   `json:"fingerprint"`
+	Revoked     bool     `json:"revoked"`
+	ExpiresAt   string   `json:"expires_at"`
+	Online      bool     `json:"online"`
+	Version     string   `json:"version,omitempty"`
+	OS          string   `json:"os,omitempty"`
+	Arch        string   `json:"arch,omitempty"`
+	Agents      []string `json:"agents,omitempty"`
 }
 
 // ListDevicesOutput lists all enrolled nodes.
