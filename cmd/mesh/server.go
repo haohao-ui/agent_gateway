@@ -36,6 +36,7 @@ const (
 // gatewayOptions configures one gateway process.
 type gatewayOptions struct {
 	Addr        string
+	HTTPAddr    string
 	DataDir     string
 	Hosts       []string
 	Invitations int
@@ -47,6 +48,7 @@ type gatewayOptions struct {
 // gatewayInfo is what a caller needs to reach and trust a running gateway.
 type gatewayInfo struct {
 	Addr            string
+	HTTPAddr        string
 	CACertPath      string
 	Fingerprint     string
 	Invitations     []protocol.PairInvitation
@@ -129,7 +131,7 @@ func serveGateway(ctx context.Context, opts gatewayOptions, onReady func(gateway
 		Devices: devices,
 		DataDir: opts.DataDir,
 	}
-	api.SetMCPHandler(mcp.NewStreamableHTTPHandler(localMCP))
+	api.SetMCPHandler(mcp.NewSSEHandler(localMCP))
 
 	tlsConfig, err := api.BuildTLSConfig(opts.Hosts)
 	if err != nil {
@@ -139,6 +141,24 @@ func serveGateway(ctx context.Context, opts gatewayOptions, onReady func(gateway
 	listener, err := net.Listen("tcp", opts.Addr)
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", opts.Addr, err)
+	}
+
+	var (
+		httpListener net.Listener
+		httpServer   *http.Server
+	)
+	if opts.HTTPAddr != "" {
+		var err error
+		httpListener, err = net.Listen("tcp", opts.HTTPAddr)
+		if err != nil {
+			_ = listener.Close()
+			return fmt.Errorf("listen http on %s: %w", opts.HTTPAddr, err)
+		}
+		httpServer = &http.Server{
+			Handler:           api.Handler(),
+			ReadHeaderTimeout: serverReadTimeout,
+			IdleTimeout:       serverIdleTimeout,
+		}
 	}
 
 	server := &http.Server{
@@ -169,6 +189,9 @@ func serveGateway(ctx context.Context, opts gatewayOptions, onReady func(gateway
 		AdminUsername:   "admin",
 		AdminPassword:   adminPass,
 	}
+	if httpListener != nil {
+		info.HTTPAddr = "http://" + httpListener.Addr().String()
+	}
 	for i := 0; i < opts.Invitations; i++ {
 		invitation, err := ca.GenerateInvitation(opts.InviteTTL)
 		if err != nil {
@@ -189,7 +212,7 @@ func serveGateway(ctx context.Context, opts gatewayOptions, onReady func(gateway
 		sweepLeases(sweepCtx, store, opts.ExpireEvery, opts.Log)
 	}()
 
-	serveErr := make(chan error, 1)
+	serveErr := make(chan error, 2)
 	go func() {
 		// ServeTLS with empty file names uses the certificates already in the
 		// TLS configuration.
@@ -199,6 +222,16 @@ func serveGateway(ctx context.Context, opts gatewayOptions, onReady func(gateway
 		}
 		serveErr <- err
 	}()
+
+	if httpServer != nil {
+		go func() {
+			err := httpServer.Serve(httpListener)
+			if errors.Is(err, http.ErrServerClosed) {
+				err = nil
+			}
+			serveErr <- err
+		}()
+	}
 
 	opts.Log.Info("gateway listening", "addr", info.Addr, "data_dir", opts.DataDir)
 	if onReady != nil {
@@ -216,6 +249,9 @@ func serveGateway(ctx context.Context, opts gatewayOptions, onReady func(gateway
 	defer cancel()
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("shut down the server: %w", err)
+	}
+	if httpServer != nil {
+		_ = httpServer.Shutdown(shutdownCtx)
 	}
 	stopSweep()
 	sweepDone.Wait()
@@ -298,7 +334,15 @@ func certHostWarning(addr string, hosts []string) string {
 // actually dial: printing "https://[::]:8443" in the pairing hint is a
 // copy-paste that cannot work from another machine.
 func reachableAddr(addr string, hosts []string) string {
-	host, port, err := net.SplitHostPort(strings.TrimPrefix(addr, "https://"))
+	scheme := "https://"
+	clean := addr
+	if strings.HasPrefix(clean, "http://") {
+		scheme = "http://"
+		clean = strings.TrimPrefix(clean, "http://")
+	} else if strings.HasPrefix(clean, "https://") {
+		clean = strings.TrimPrefix(clean, "https://")
+	}
+	host, port, err := net.SplitHostPort(clean)
 	if err != nil {
 		return addr
 	}
@@ -312,12 +356,13 @@ func reachableAddr(addr string, hosts []string) string {
 			host = "127.0.0.1"
 		}
 	}
-	return "https://" + net.JoinHostPort(host, port)
+	return scheme + net.JoinHostPort(host, port)
 }
 
 func runServer(ctx context.Context, args []string) error {
 	cmd := newCommand("server", "Run the gateway: pairing endpoint and mTLS task API.")
-	addr := cmd.flags.String("addr", defaultServerAddr, "listen address")
+	addr := cmd.flags.String("addr", defaultServerAddr, "listen address (HTTPS/mTLS)")
+	httpAddr := cmd.flags.String("http-addr", "", "optional cleartext HTTP listen address for WebUI and MCP without TLS (e.g. 0.0.0.0:8080)")
 	dataDir := cmd.flags.String("data-dir", "./gateway-data", "directory for the CA, database and node records")
 	hosts := cmd.flags.String("hosts", "", "extra comma-separated host or IP names for the server certificate")
 	invitations := cmd.flags.Int("invitations", 1, "how many pairing invitations to print at startup")
@@ -340,6 +385,7 @@ func runServer(ctx context.Context, args []string) error {
 
 	return serveGateway(ctx, gatewayOptions{
 		Addr:        address,
+		HTTPAddr:    *httpAddr,
 		DataDir:     *dataDir,
 		Hosts:       hostList,
 		Invitations: *invitations,
@@ -347,23 +393,32 @@ func runServer(ctx context.Context, args []string) error {
 		ExpireEvery: *expireEvery,
 		Log:         log,
 	}, func(info gatewayInfo) {
-		fmt.Printf("listening:   %s\n", info.Addr)
-		fmt.Printf("data dir:    %s\n", *dataDir)
-		fmt.Printf("CA cert:     %s\n", info.CACertPath)
-		fmt.Printf("CA SHA-256:  %s\n", info.Fingerprint)
+		fmt.Printf("listening (TLS): %s\n", info.Addr)
+		if info.HTTPAddr != "" {
+			fmt.Printf("listening (HTTP):%s\n", reachableAddr(info.HTTPAddr, hostList))
+		}
+		fmt.Printf("data dir:        %s\n", *dataDir)
+		fmt.Printf("CA cert:         %s\n", info.CACertPath)
+		fmt.Printf("CA SHA-256:      %s\n", info.Fingerprint)
 		for _, invitation := range info.Invitations {
-			fmt.Printf("invitation:  %s (expires %s)\n", invitation.Token, invitation.ExpiresAt.UTC().Format(time.RFC3339))
+			fmt.Printf("invitation:      %s (expires %s)\n", invitation.Token, invitation.ExpiresAt.UTC().Format(time.RFC3339))
 		}
 		if pending, err := identity.PendingInvitations(*dataDir); err == nil && pending > 0 {
-			fmt.Printf("pending:     %d invitation(s) from earlier runs are still usable\n", pending)
+			fmt.Printf("pending:         %d invitation(s) from earlier runs are still usable\n", pending)
 		}
 		if info.OperatorToken != "" {
-			fmt.Printf("operator tok:%s\n", info.OperatorToken)
+			fmt.Printf("operator token:  %s\n", info.OperatorToken)
 		}
-		fmt.Printf("web dashboard: %s/ui/\n", reachableAddr(info.Addr, hostList))
-		fmt.Printf("web login:     username: %s | password: %s\n", info.AdminUsername, info.AdminPassword)
+		fmt.Printf("web dashboard:   %s/ui/\n", reachableAddr(info.Addr, hostList))
+		fmt.Printf("web login:       username: %s | password: %s\n", info.AdminUsername, info.AdminPassword)
+		if info.OperatorToken != "" {
+			if info.HTTPAddr != "" {
+				fmt.Printf("mcp (HTTP 推荐):  %s/mcp?token=%s\n", reachableAddr(info.HTTPAddr, hostList), info.OperatorToken)
+			}
+			fmt.Printf("mcp (HTTPS):     %s/mcp?token=%s\n", reachableAddr(info.Addr, hostList), info.OperatorToken)
+		}
 		if warning := certHostWarning(address, hostList); warning != "" {
-			fmt.Printf("\nwarning:     %s\n", warning)
+			fmt.Printf("\nwarning:         %s\n", warning)
 		}
 		if len(info.Invitations) > 0 {
 			fmt.Printf("\npair a machine with:\n  mesh pair --server %s --ca %s --token <token> --dir ./node\n",

@@ -80,6 +80,7 @@ type Server struct {
 
 	adminPassword string
 	adminToken    string
+	mcpSessions   sync.Map // sessionID (string) -> expiry time (time.Time)
 
 	// pairLimiter bounds unauthenticated /v1/pair attempts per client address.
 	pairLimiter *pairLimiter
@@ -139,9 +140,10 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /v1/events/stream", s.handleSSEStreams)
 	s.mux.HandleFunc("GET /v1/doctor", s.handleWebDoctor)
 
-	// Public status and AI onboarding documentation
+	// Public status, CA certificate and AI onboarding documentation
 	s.mux.HandleFunc("GET /api/public/status", s.handlePublicStatus)
 	s.mux.HandleFunc("GET /onboarding.md", s.handleOnboardingMD)
+	s.mux.HandleFunc("GET /ca.crt", s.handleDownloadCA)
 
 	// Streamable HTTP / SSE MCP protocol endpoint
 	s.mux.HandleFunc("/mcp", s.handleMCP)

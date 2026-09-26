@@ -1,8 +1,11 @@
 package httpapi
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -166,6 +169,64 @@ func (s *Server) handleWaitTask(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+type sseEndpointRewriter struct {
+	http.ResponseWriter
+	token   string
+	server  *Server
+	rewrote bool
+}
+
+func (rw *sseEndpointRewriter) Flush() {
+	if f, ok := rw.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (rw *sseEndpointRewriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if h, ok := rw.ResponseWriter.(http.Hijacker); ok {
+		return h.Hijack()
+	}
+	return nil, nil, http.ErrNotSupported
+}
+
+func (rw *sseEndpointRewriter) Write(b []byte) (int, error) {
+	if !rw.rewrote && bytes.Contains(b, []byte("event: endpoint")) {
+		rw.rewrote = true
+		lines := strings.Split(string(b), "\n")
+		var modifiedLines []string
+		for _, line := range lines {
+			if strings.HasPrefix(line, "data:") {
+				ep := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+				// Extract sessionid if present and record it in mcpSessions
+				if idx := strings.Index(ep, "sessionid="); idx != -1 {
+					sid := ep[idx+len("sessionid="):]
+					if ampIdx := strings.Index(sid, "&"); ampIdx != -1 {
+						sid = sid[:ampIdx]
+					}
+					if sid != "" && rw.server != nil {
+						rw.server.mcpSessions.Store(sid, time.Now().Add(24*time.Hour))
+					}
+				}
+				// Append token to endpoint so standard MCP clients automatically send token in subsequent POSTs
+				if rw.token != "" && !strings.Contains(ep, "token=") {
+					sep := "&"
+					if !strings.Contains(ep, "?") {
+						sep = "?"
+					}
+					ep = ep + sep + "token=" + rw.token
+				}
+				modifiedLines = append(modifiedLines, "data: "+ep)
+			} else {
+				modifiedLines = append(modifiedLines, line)
+			}
+		}
+		newBytes := []byte(strings.Join(modifiedLines, "\n"))
+		_, err := rw.ResponseWriter.Write(newBytes)
+		return len(b), err
+	}
+	return rw.ResponseWriter.Write(b)
+}
+
 // SetMCPHandler attaches an HTTP handler to serve MCP protocol requests on /mcp.
 func (s *Server) SetMCPHandler(h http.Handler) {
 	s.mcpHandler = h
@@ -177,8 +238,20 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 1. If request carries a valid sessionid that was already authenticated, allow it directly
+	sessionID := r.URL.Query().Get("sessionid")
+	if sessionID != "" {
+		if expVal, ok := s.mcpSessions.Load(sessionID); ok {
+			if exp, ok := expVal.(time.Time); ok && time.Now().Before(exp) {
+				s.mcpHandler.ServeHTTP(w, r)
+				return
+			}
+		}
+	}
+
+	// 2. Authenticate token for new session establishment or non-session requests
+	token := ""
 	if s.policies != nil {
-		token := ""
 		headers := r.Header.Values("Authorization")
 		if len(headers) == 1 {
 			fields := strings.Fields(headers[0])
@@ -207,5 +280,28 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// 3. For GET requests (SSE stream initialization), wrap ResponseWriter to inject token and cache sessionid
+	if r.Method == http.MethodGet {
+		rw := &sseEndpointRewriter{
+			ResponseWriter: w,
+			token:          token,
+			server:         s,
+		}
+		s.mcpHandler.ServeHTTP(rw, r)
+		return
+	}
+
 	s.mcpHandler.ServeHTTP(w, r)
 }
+
+func (s *Server) handleDownloadCA(w http.ResponseWriter, r *http.Request) {
+	if s.ca == nil {
+		writeError(w, http.StatusNotFound, "not_found", "CA certificate not found")
+		return
+	}
+	w.Header().Set("Content-Type", "application/x-x509-ca-cert")
+	w.Header().Set("Content-Disposition", "attachment; filename=\"ca.crt\"")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(s.ca.CACertPEM())
+}
+

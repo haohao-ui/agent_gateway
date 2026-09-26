@@ -45,7 +45,9 @@ func NewStreamableHTTPHandler(backend GatewayBackend) http.Handler {
 func NewSSEHandler(backend GatewayBackend) http.Handler {
 	return official.NewSSEHandler(func(req *http.Request) *official.Server {
 		return NewServer(backend)
-	}, nil)
+	}, &official.SSEOptions{
+		DisableLocalhostProtection: true,
+	})
 }
 
 func registerTools(s *official.Server, backend GatewayBackend) {
