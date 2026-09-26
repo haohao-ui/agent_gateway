@@ -173,6 +173,25 @@ Orca 不可用：`Unable to determine Orca.app path from symlink: /usr/local/bin
   - 验证结果：全包单元测试与 `-race` 竞态检测全数通过、`gofmt` 规范、`go vet` 零告警、Linux/Windows 交叉编译成功；
   - 交付验收报告 `docs/reports/file-transfer.md`。
 
+### M3-B：跨平台用户级系统服务托管完成（2026-09-26）
+
+- 主线合入（分支 `feat/service`）：
+  - `internal/service`：抽象跨平台用户级系统服务管理器接口与生命周期契约；原生支持 macOS `launchd`（`~/Library/LaunchAgents` plist 模板与 `launchctl` 集成）及 Linux `systemd`（`~/.config/systemd/user` unit 模板与 `systemctl --user` 集成）；Windows 平台友好引导；
+  - `cmd/mesh`：新增 `mesh service install/uninstall/start/stop/status` 子命令，支持参数一键配置后台开机自启、奔溃自动拉起、日志重定向以及 JSON 状态输出；
+  - 验证结果：全包单元测试与 `-race` 竞态检测全部通过、`gofmt` 规范、`go vet` 零告警、Linux/Windows/macOS 交叉编译与运行全部成功；
+  - 交付验收报告 `docs/reports/service.md`。
+
+---
+
+## 阶段验收结论：M3 里程碑全量达成
+
+至此，**M3 核心拓展里程碑**全部四大核心能力均已高标准交付并合并入主干 `main`：
+1. **原生内嵌 WebUI 控制台与 SSE 实时事件流**（`feat/webui-sse`）；
+2. **官方 MCP（Model Context Protocol）接入与 Stdio 驱动**（`feat/mcp`）；
+3. **安全文件传输与任务产物沙箱（基于 `os.Root`）**（`feat/file-transfer`）；
+4. **跨平台用户级系统服务守护管理（launchd / systemd）**（`feat/service`）。
+
+
 
 
 
