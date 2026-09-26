@@ -9,8 +9,10 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"agent-gateway/internal/devicestore"
+	"agent-gateway/internal/events"
 	"agent-gateway/internal/identity"
 	"agent-gateway/internal/policy"
 	"agent-gateway/internal/protocol"
@@ -109,6 +111,13 @@ func (s *Server) operatorSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.notifyNode(in.NodeID)
+	s.publishEvent(events.Event{
+		Type:      events.TypeTaskSubmitted,
+		TaskID:    task.ID,
+		NodeID:    task.NodeID,
+		State:     task.State,
+		Timestamp: task.CreatedAt,
+	})
 	writeJSON(w, 201, task)
 }
 func (s *Server) operatorTask(w http.ResponseWriter, r *http.Request, action string) (protocol.Task, bool) {
@@ -138,6 +147,13 @@ func (s *Server) operatorCancel(w http.ResponseWriter, r *http.Request) {
 		handleStoreError(w, err)
 		return
 	}
+	s.publishEvent(events.Event{
+		Type:      events.TypeTaskCancelled,
+		TaskID:    task.ID,
+		NodeID:    task.NodeID,
+		State:     task.State,
+		Timestamp: time.Now().UTC(),
+	})
 	writeJSON(w, 200, task)
 }
 func (s *Server) operatorRequeue(w http.ResponseWriter, r *http.Request) {
@@ -151,6 +167,13 @@ func (s *Server) operatorRequeue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.notifyNode(requeued.NodeID)
+	s.publishEvent(events.Event{
+		Type:      events.TypeTaskRequeued,
+		TaskID:    requeued.ID,
+		NodeID:    requeued.NodeID,
+		State:     requeued.State,
+		Timestamp: time.Now().UTC(),
+	})
 	writeJSON(w, 200, requeued)
 }
 func (s *Server) operatorResolve(w http.ResponseWriter, r *http.Request) {
@@ -178,6 +201,13 @@ func (s *Server) operatorResolve(w http.ResponseWriter, r *http.Request) {
 		handleStoreError(w, err)
 		return
 	}
+	s.publishEvent(events.Event{
+		Type:      events.TypeTaskResolved,
+		TaskID:    resolved.ID,
+		NodeID:    resolved.NodeID,
+		State:     resolved.State,
+		Timestamp: time.Now().UTC(),
+	})
 	writeJSON(w, 200, resolved)
 }
 func (s *Server) operatorList(w http.ResponseWriter, r *http.Request) {

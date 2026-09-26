@@ -26,10 +26,12 @@ import (
 	"time"
 
 	"agent-gateway/internal/devicestore"
+	"agent-gateway/internal/events"
 	"agent-gateway/internal/identity"
 	"agent-gateway/internal/policy"
 	"agent-gateway/internal/protocol"
 	"agent-gateway/internal/taskstore"
+	"agent-gateway/internal/webui"
 )
 
 type contextKey string
@@ -64,11 +66,14 @@ type Config struct {
 
 // Server exposes the gateway task management and node protocol over HTTP/2 with mTLS.
 type Server struct {
-	store    *taskstore.Store
-	ca       *identity.CA
-	mux      *http.ServeMux
-	devices  *devicestore.Store
-	policies *policy.Store
+	store      *taskstore.Store
+	ca         *identity.CA
+	mux        *http.ServeMux
+	devices    *devicestore.Store
+	policies   *policy.Store
+	hub        *events.Hub
+	dataDir    string
+	doctorFunc DoctorFunc
 
 	// pairLimiter bounds unauthenticated /v1/pair attempts per client address.
 	pairLimiter *pairLimiter
@@ -82,6 +87,7 @@ func NewServer(store *taskstore.Store, ca *identity.CA) *Server {
 	s := &Server{
 		store:       store,
 		ca:          ca,
+		hub:         events.NewHub(128),
 		mux:         http.NewServeMux(),
 		pairLimiter: newPairLimiter(pairRatePerSecond, pairBurst, time.Now),
 		waiters:     make(map[string][]chan struct{}),
@@ -91,7 +97,33 @@ func NewServer(store *taskstore.Store, ca *identity.CA) *Server {
 	return s
 }
 
+// SetDataDir sets the gateway data directory path for diagnostics and reporting.
+func (s *Server) SetDataDir(dir string) {
+	s.dataDir = dir
+}
+
+// SetDoctorFunc configures the diagnostics runner for web queries.
+func (s *Server) SetDoctorFunc(fn DoctorFunc) {
+	s.doctorFunc = fn
+}
+
+// Hub returns the server's event hub for subscribing to or emitting events.
+func (s *Server) Hub() *events.Hub {
+	return s.hub
+}
+
 func (s *Server) registerRoutes() {
+	// Web UI management console and real-time SSE stream
+	s.mux.Handle("GET /ui/", http.StripPrefix("/ui", webui.Handler()))
+	s.mux.HandleFunc("GET /ui", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/ui/", http.StatusPermanentRedirect)
+	})
+	s.mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/ui/", http.StatusFound)
+	})
+	s.mux.HandleFunc("GET /v1/events/stream", s.handleSSEStreams)
+	s.mux.HandleFunc("GET /v1/doctor", s.handleWebDoctor)
+
 	// Public pair endpoint (protected by server TLS, an invitation token and
 	// the per-address rate limiter).
 	s.mux.HandleFunc("POST /v1/pair", s.handlePair)
@@ -256,6 +288,13 @@ func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 
 	// Wake up any long-polling claim waiter for this node
 	s.notifyNode(req.NodeID)
+	s.publishEvent(events.Event{
+		Type:      events.TypeTaskSubmitted,
+		TaskID:    task.ID,
+		NodeID:    task.NodeID,
+		State:     task.State,
+		Timestamp: task.CreatedAt,
+	})
 
 	writeJSON(w, http.StatusCreated, task)
 }
@@ -285,6 +324,13 @@ func (s *Server) handleCancelTask(w http.ResponseWriter, r *http.Request) {
 		handleStoreError(w, err)
 		return
 	}
+	s.publishEvent(events.Event{
+		Type:      events.TypeTaskCancelled,
+		TaskID:    task.ID,
+		NodeID:    task.NodeID,
+		State:     task.State,
+		Timestamp: time.Now().UTC(),
+	})
 	writeJSON(w, http.StatusOK, task)
 }
 
@@ -313,6 +359,13 @@ func (s *Server) handleClaim(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if lease != nil {
+		s.publishEvent(events.Event{
+			Type:      events.TypeTaskClaimed,
+			TaskID:    lease.Task.ID,
+			NodeID:    lease.Task.NodeID,
+			State:     lease.Task.State,
+			Timestamp: time.Now().UTC(),
+		})
 		writeJSON(w, http.StatusOK, lease)
 		return
 	}
@@ -345,6 +398,13 @@ func (s *Server) handleClaim(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if lease != nil {
+			s.publishEvent(events.Event{
+				Type:      events.TypeTaskClaimed,
+				TaskID:    lease.Task.ID,
+				NodeID:    lease.Task.NodeID,
+				State:     lease.Task.State,
+				Timestamp: time.Now().UTC(),
+			})
 			writeJSON(w, http.StatusOK, lease)
 			return
 		}
@@ -388,6 +448,14 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
 		handleStoreError(w, err)
 		return
 	}
+
+	s.publishEvent(events.Event{
+		Type:      events.TypeTaskStatus,
+		TaskID:    req.TaskID,
+		NodeID:    caller,
+		State:     protocol.Running,
+		Timestamp: time.Now().UTC(),
+	})
 
 	w.WriteHeader(http.StatusOK)
 }
@@ -452,6 +520,14 @@ func (s *Server) handleRenew(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.publishEvent(events.Event{
+		Type:      events.TypeTaskStatus,
+		TaskID:    req.TaskID,
+		NodeID:    caller,
+		State:     protocol.Running,
+		Timestamp: time.Now().UTC(),
+	})
+
 	writeJSON(w, http.StatusOK, protocol.RenewResponse{LeaseExpiresAt: *task.LeaseExpiresAt})
 }
 
@@ -475,6 +551,14 @@ func (s *Server) handleComplete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.publishEvent(events.Event{
+		Type:      events.TypeTaskCompleted,
+		TaskID:    req.TaskID,
+		NodeID:    caller,
+		Timestamp: time.Now().UTC(),
+		Data:      req.Result,
+	})
+
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -494,8 +578,18 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Acknowledgement only: there is no event store yet, so nothing is durable
-	// here. See the package comment.
+	ts := ev.Timestamp
+	if ts.IsZero() {
+		ts = time.Now().UTC()
+	}
+	s.publishEvent(events.Event{
+		Type:      events.TypeTaskOutput,
+		TaskID:    ev.TaskID,
+		NodeID:    caller,
+		Timestamp: ts,
+		Data:      string(ev.Data),
+	})
+
 	w.WriteHeader(http.StatusOK)
 }
 

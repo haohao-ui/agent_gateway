@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"agent-gateway/internal/devicestore"
+	"agent-gateway/internal/doctor"
 	"agent-gateway/internal/httpapi"
 	"agent-gateway/internal/identity"
 	"agent-gateway/internal/policy"
@@ -107,6 +108,10 @@ func serveGateway(ctx context.Context, opts gatewayOptions, onReady func(gateway
 	if err != nil {
 		return err
 	}
+	api.SetDataDir(opts.DataDir)
+	api.SetDoctorFunc(func(ctx context.Context) any {
+		return doctor.DiagnoseServer(ctx, opts.DataDir)
+	})
 	tlsConfig, err := api.BuildTLSConfig(opts.Hosts)
 	if err != nil {
 		return fmt.Errorf("build the server TLS configuration: %w", err)
