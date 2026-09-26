@@ -29,6 +29,7 @@ usage:
   mesh credential issue|revoke   manage operator credentials locally
   mesh device list|revoke        list or revoke enrolled devices
   mesh doctor [flags]            diagnose node or server environment and connectivity
+  mesh mcp [flags]               run Model Context Protocol (MCP) server over stdio
 
 Common flags:
   --log-level debug|info|warn|error   (default info)
@@ -67,6 +68,8 @@ func main() {
 		err = runTask(ctx, os.Args[2:])
 	case "doctor":
 		err = runDoctor(ctx, os.Args[2:])
+	case "mcp":
+		err = runMCP(ctx, os.Args[2:])
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 		return
