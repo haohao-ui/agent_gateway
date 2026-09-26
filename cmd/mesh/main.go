@@ -26,6 +26,9 @@ usage:
   mesh node [flags]          run the task loop for this machine
   mesh task [flags] <verb>   submit, get or cancel a task
 
+  mesh credential issue|revoke   manage operator credentials locally
+  mesh device revoke            revoke a device as administrator
+
 Common flags:
   --log-level debug|info|warn|error   (default info)
 
@@ -51,6 +54,10 @@ func main() {
 		err = runPair(ctx, os.Args[2:])
 	case "node":
 		err = runNode(ctx, os.Args[2:])
+	case "credential":
+		err = runCredential(ctx, os.Args[2:])
+	case "device":
+		err = runDevice(ctx, os.Args[2:])
 	case "task":
 		err = runTask(ctx, os.Args[2:])
 	case "help", "-h", "--help":

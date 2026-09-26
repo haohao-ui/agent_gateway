@@ -48,24 +48,29 @@ func TestNodeExecutesTaskAndReportsResult(t *testing.T) {
 		t.Fatalf("exit code is %d, want 0", final.Result.ExitCode)
 	}
 
-	// The journal must end in acknowledged: the node needs that record to know
-	// the gateway took the result.
-	entries, err := n.journal.Entries()
-	if err != nil {
-		t.Fatalf("read journal: %v", err)
-	}
-	if got := lastState(entries, task.ID, final.AttemptID); got != JournalAcknowledged {
-		t.Fatalf("journal ended in %q, want %q", got, JournalAcknowledged)
+	// Server completion precedes receiving the HTTP ACK and durable local
+	// cleanup. Wait for both local effects instead of racing that handoff.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		entries, err := n.journal.Entries()
+		if err != nil {
+			t.Fatalf("read journal: %v", err)
+		}
+		pending, err := n.outbox.List()
+		if err != nil {
+			t.Fatalf("list outbox: %v", err)
+		}
+		state := lastState(entries, task.ID, final.AttemptID)
+		if state == JournalAcknowledged && len(pending) == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			// Do not print outbox entries: they contain lease credentials.
+			t.Fatalf("local ACK cleanup incomplete: journal=%q pending=%d", state, len(pending))
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 
-	// Nothing may be left in the outbox once the gateway acknowledged it.
-	pending, err := n.outbox.List()
-	if err != nil {
-		t.Fatalf("list outbox: %v", err)
-	}
-	if len(pending) != 0 {
-		t.Fatalf("outbox still holds %d entries: %+v", len(pending), pending)
-	}
 }
 
 func TestNodeKeepsLeaseAliveWhileRunning(t *testing.T) {

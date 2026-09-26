@@ -13,8 +13,10 @@ import (
 	"sync"
 	"time"
 
+	"agent-gateway/internal/devicestore"
 	"agent-gateway/internal/httpapi"
 	"agent-gateway/internal/identity"
+	"agent-gateway/internal/policy"
 	"agent-gateway/internal/protocol"
 	"agent-gateway/internal/taskstore"
 )
@@ -91,7 +93,20 @@ func serveGateway(ctx context.Context, opts gatewayOptions, onReady func(gateway
 		return fmt.Errorf("load or create the CA: %w", err)
 	}
 
-	api := httpapi.NewServer(store, ca)
+	devices, err := devicestore.Open(filepath.Join(opts.DataDir, "devices.sqlite"))
+	if err != nil {
+		return fmt.Errorf("open device store: %w", err)
+	}
+	defer devices.Close()
+	policies, err := policy.Open(filepath.Join(opts.DataDir, "policy.sqlite"))
+	if err != nil {
+		return fmt.Errorf("open policy store: %w", err)
+	}
+	defer policies.Close()
+	api, err := httpapi.NewSecureServer(store, ca, devices, policies)
+	if err != nil {
+		return err
+	}
 	tlsConfig, err := api.BuildTLSConfig(opts.Hosts)
 	if err != nil {
 		return fmt.Errorf("build the server TLS configuration: %w", err)
