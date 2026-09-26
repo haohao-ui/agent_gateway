@@ -65,4 +65,16 @@ Orca 不可用：`Unable to determine Orca.app path from symlink: /usr/local/bin
   - `go test -race ./...`（退出码 0，全包通过，0 数据竞争）
   - `go vet ./...`（退出码 0，无任何静态告警）
   - 交叉编译：`GOOS=windows GOARCH=amd64`、`GOOS=linux GOARCH=amd64`、`GOOS=linux GOARCH=arm64`、`GOOS=darwin GOARCH=amd64` 全部通过。
-- M1 目标已达成。M2 规划见 docs/M2-DESIGN.md，等待协调者审定后派工。
+- M1 目标已达成。M2 规划见 docs/M2-DESIGN.md。
+
+## M2 启动与分工派发 2026-09-26T00:32:00+08:00
+
+- 架构技术决策明确：采用 **mTLS + HTTP/2 双向流（ALPN h2）**。
+- 共享协议与契约已冻结：
+  - `internal/protocol/wire.go`：定义 Pairing 邀请/响应、Claim/Renew/Complete 信封及流式 TaskEvent 结构；
+  - `docs/CONTRACTS.md`：详细定义 `/v1/pair` 及 `/v1/tasks/**` mTLS 路由状态码与流式语义；
+- 实施分工：
+  1. `internal/identity`：私有 CA、证书自签、邀请令牌管理与 CSR 签发；
+  2. `internal/httpapi`：HTTP/2 mTLS 监听器、证书提取与 Node 身份绑定、长连接流式挂起与状态流转；
+  3. `internal/node`：节点出站客户端、mTLS 连接池、本地 outbox 与任务执行循环；
+  4. `cmd/mesh`：集成 CLI 入口（server, node, pair, task）。

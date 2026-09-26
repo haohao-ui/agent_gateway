@@ -57,6 +57,46 @@ func Run(ctx context.Context, cfg Config, instruction string) (protocol.Result, 
 
 Unix 使用独立进程组取消并处理子进程遗留管道；Windows 使用 Job Objects，不能只杀父进程。若无法完整实现某平台，编译通过也必须在报告列未完成，不能假装支持。限制单个任务的日志，不写真实 Agent 配置。
 
-## 下一阶段协议要求
+## M2 协议与 HTTP/2 路由规范
 
-wire envelope 含 protocol_version、capability/version、request_id；节点协商 min/max 版本。独立事件序号按任务单调递增，断线可补读；event 与状态同事务写入。Artifact 为引用，不内嵌字节。能力上报不等于授权。M2 的 HTTP/PKI/节点 journal 接口在派工前补齐，当前不得自行冻结或凭想象实现。
+### 1. 传输与 TLS 配置
+- 服务端启用标准库 `crypto/tls` + `net/http`，ALPN 宣告 `h2` 与 `http/1.1`，节点出站连接优先协商至 HTTP/2。
+- 节点至网关单一 TCP 连接通过 HTTP/2 多路复用，承载任务拉取、心跳、流式事件及结果上报多条虚拟流。
+- 认证分层：
+  - `/v1/pair`：单向 TLS（仅服务端证书），要求有效的短期邀请凭证与合法 CSR，响应签发后的证书及 CA 根证书。
+  - `/v1/tasks/**`：**强制 mTLS 双向认证**。校验客户端证书链有效性、吊销状态，并将证书 URI SAN 中的 `NodeID` 强制注入请求上下文；禁止任何未提供合法客户端证书的请求访问任务路由。
+
+### 2. 核心路由与状态码约定
+
+#### `POST /v1/pair`
+- **认证**：公开入口（需服务端 TLS），限流保护。
+- **请求体**：`protocol.PairRequest { invitation_token, csr_pem }`
+- **响应体**：`protocol.PairResponse { node_id, cert_pem, ca_cert_pem, server_version }`
+- **错误码**：`400 Bad Request`（无效 CSR 或参数）、`401 Unauthorized`（邀请码无效或已过期）。
+
+#### `POST /v1/tasks/claim`
+- **认证**：mTLS（提取 `NodeID`）。
+- **语义**：长连接等待分配给该 `NodeID` 的最早任务。若当前无排队任务，请求挂起等待（默认 25s），有任务立即以 HTTP/2 帧返回；超时无任务返回 `204 No Content`，节点随后重试发起。
+- **请求体**：`protocol.ClaimRequest { lease_duration_seconds }`
+- **响应体**：`200 OK` + `protocol.Lease`（包含 Task 元数据与一次性 Lease Token）。
+
+#### `POST /v1/tasks/renew`
+- **认证**：mTLS。
+- **语义**：在任务执行期间延长租约截止时间。
+- **请求体**：`protocol.RenewRequest { task_id, attempt_id, token, lease_duration_seconds }`
+- **响应体**：`200 OK` + `protocol.RenewResponse { lease_expires_at }`
+- **错误码**：`409 Conflict`（租约已过期或 attempt 不匹配）。
+
+#### `POST /v1/tasks/complete`
+- **认证**：mTLS。
+- **语义**：幂等提交任务终态结果。支持网络 ACK 丢失后的重传。
+- **请求体**：`protocol.CompleteRequest { task_id, attempt_id, token, result }`
+- **响应体**：`200 OK`。
+- **错误码**：`409 Conflict`（相同 attempt 提交不同结果或 attempt 冲突）。
+
+#### `POST /v1/tasks/events`
+- **认证**：mTLS。
+- **语义**：执行中事件与增量 stdout/stderr 输出流式上传。支持按单调自增序号（sequence）写入任务事件序列。
+- **请求体**：`protocol.TaskEvent { task_id, attempt_id, sequence, timestamp, type, data }`
+- **响应体**：`200 OK`。
+

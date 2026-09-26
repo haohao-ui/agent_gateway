@@ -1,0 +1,182 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+
+	"agent-gateway/internal/node"
+	"agent-gateway/internal/protocol"
+)
+
+const taskHelp = `usage:
+  mesh task submit --node-dir ./node --capability agent.run --input '{"prompt":"..."}' [flags]
+  mesh task get --node-dir ./node <task-id>
+  mesh task cancel --node-dir ./node <task-id>
+
+The task API is authenticated with the machine's certificate, so these commands
+speak as the node in --node-dir: a task is queued for that machine and only that
+machine can read or cancel it.
+`
+
+// runTask dispatches the task verbs.
+func runTask(ctx context.Context, args []string) error {
+	if len(args) == 0 {
+		fmt.Fprint(os.Stderr, taskHelp)
+		return errors.New("a task verb is required")
+	}
+
+	switch args[0] {
+	case "submit":
+		return runTaskSubmit(ctx, args[1:])
+	case "get":
+		return runTaskGet(ctx, args[1:])
+	case "cancel":
+		return runTaskCancel(ctx, args[1:])
+	case "help", "-h", "--help":
+		fmt.Print(taskHelp)
+		return nil
+	default:
+		return fmt.Errorf("unknown task verb %q", args[0])
+	}
+}
+
+// taskClient builds a client from the identity in nodeDir.
+func taskClient(ctx context.Context, nodeDir, serverOverride string) (*node.GatewayClient, node.PairState, error) {
+	if nodeDir == "" {
+		nodeDir = "./node"
+	}
+	state, err := node.LoadState(nodeDir)
+	if err != nil {
+		return nil, node.PairState{}, fmt.Errorf("%w (did you run 'mesh pair'?)", err)
+	}
+	serverURL := state.ServerURL
+	if serverOverride != "" {
+		serverURL = serverOverride
+	}
+
+	caPEM, err := os.ReadFile(filepath.Join(nodeDir, node.NodeCAFile))
+	if err != nil {
+		return nil, node.PairState{}, fmt.Errorf("read the CA certificate: %w", err)
+	}
+	certPEM, err := os.ReadFile(filepath.Join(nodeDir, node.NodeCertFile))
+	if err != nil {
+		return nil, node.PairState{}, fmt.Errorf("read the node certificate: %w", err)
+	}
+	keyPEM, err := os.ReadFile(filepath.Join(nodeDir, node.NodeKeyFile))
+	if err != nil {
+		return nil, node.PairState{}, fmt.Errorf("read the node key: %w", err)
+	}
+
+	client, err := node.NewGatewayClient(serverURL, caPEM, certPEM, keyPEM, 0)
+	if err != nil {
+		return nil, node.PairState{}, err
+	}
+	return client, state, nil
+}
+
+func runTaskSubmit(ctx context.Context, args []string) error {
+	cmd := newCommand("task submit", "Queue a task for the machine in --node-dir.")
+	nodeDir := cmd.flags.String("node-dir", "./node", "directory holding the machine identity")
+	server := cmd.flags.String("server", "", "override the gateway URL recorded at pairing time")
+	capability := cmd.flags.String("capability", "agent.run", "capability name")
+	version := cmd.flags.Int("capability-version", 1, "capability version")
+	input := cmd.flags.String("input", "", "capability input as JSON, for example '{\"prompt\":\"hi\"}'")
+	timeout := cmd.flags.Int("timeout", 300, "task timeout in seconds")
+	idempotencyKey := cmd.flags.String("key", "", "idempotency key: resubmitting the same key and input returns the first task")
+	if err := cmd.flags.Parse(args); err != nil {
+		return err
+	}
+
+	if *input == "" {
+		return errors.New("--input is required")
+	}
+	if !json.Valid([]byte(*input)) {
+		return errors.New("--input must be valid JSON")
+	}
+	if _, err := cmd.logger(); err != nil {
+		return err
+	}
+
+	client, state, err := taskClient(ctx, *nodeDir, *server)
+	if err != nil {
+		return err
+	}
+	defer client.CloseIdleConnections()
+
+	task, err := client.Submit(ctx, protocol.SubmitRequest{
+		NodeID:            state.NodeID,
+		Capability:        *capability,
+		CapabilityVersion: *version,
+		Input:             json.RawMessage(*input),
+		TimeoutSeconds:    *timeout,
+		IdempotencyKey:    *idempotencyKey,
+	})
+	if err != nil {
+		return err
+	}
+	return printTask(task)
+}
+
+func runTaskGet(ctx context.Context, args []string) error {
+	cmd := newCommand("task get", "Show one task owned by the machine in --node-dir.")
+	nodeDir := cmd.flags.String("node-dir", "./node", "directory holding the machine identity")
+	server := cmd.flags.String("server", "", "override the gateway URL recorded at pairing time")
+	if err := cmd.flags.Parse(args); err != nil {
+		return err
+	}
+	if cmd.flags.NArg() != 1 {
+		return errors.New("exactly one task id is required")
+	}
+
+	client, _, err := taskClient(ctx, *nodeDir, *server)
+	if err != nil {
+		return err
+	}
+	defer client.CloseIdleConnections()
+
+	task, err := client.Get(ctx, cmd.flags.Arg(0))
+	if err != nil {
+		return err
+	}
+	return printTask(task)
+}
+
+func runTaskCancel(ctx context.Context, args []string) error {
+	cmd := newCommand("task cancel", "Ask for a task owned by the machine in --node-dir to stop.")
+	nodeDir := cmd.flags.String("node-dir", "./node", "directory holding the machine identity")
+	server := cmd.flags.String("server", "", "override the gateway URL recorded at pairing time")
+	if err := cmd.flags.Parse(args); err != nil {
+		return err
+	}
+	if cmd.flags.NArg() != 1 {
+		return errors.New("exactly one task id is required")
+	}
+
+	client, _, err := taskClient(ctx, *nodeDir, *server)
+	if err != nil {
+		return err
+	}
+	defer client.CloseIdleConnections()
+
+	task, err := client.Cancel(ctx, cmd.flags.Arg(0))
+	if err != nil {
+		return err
+	}
+	fmt.Printf("cancellation recorded; the task is now %s\n", task.State)
+	return printTask(task)
+}
+
+// printTask writes the gateway's view of a task. The lease token is not part of
+// protocol.Task, so a listing can never leak the attempt credential.
+func printTask(task protocol.Task) error {
+	encoded, err := json.MarshalIndent(task, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode the task: %w", err)
+	}
+	fmt.Printf("%s\n", encoded)
+	return nil
+}
