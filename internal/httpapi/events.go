@@ -28,6 +28,11 @@ func (s *Server) handleSSEStreams(w http.ResponseWriter, r *http.Request) {
 		if token == "" {
 			token = r.URL.Query().Get("token")
 		}
+		if token == "" {
+			if c, err := r.Cookie("gateway_token"); err == nil && c.Value != "" {
+				token = c.Value
+			}
+		}
 
 		if token == "" {
 			writeError(w, http.StatusUnauthorized, "unauthorized", "operator token required for event stream")

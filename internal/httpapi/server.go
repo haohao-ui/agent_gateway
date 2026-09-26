@@ -78,6 +78,9 @@ type Server struct {
 	doctorFunc DoctorFunc
 	mcpHandler http.Handler
 
+	adminPassword string
+	adminToken    string
+
 	// pairLimiter bounds unauthenticated /v1/pair attempts per client address.
 	pairLimiter *pairLimiter
 
@@ -99,6 +102,12 @@ func NewServer(store *taskstore.Store, ca *identity.CA) *Server {
 	s.registerOperatorRoutes()
 	s.registerArtifactRoutes()
 	return s
+}
+
+// SetAdminCredentials configures the operator login credentials.
+func (s *Server) SetAdminCredentials(password, token string) {
+	s.adminPassword = password
+	s.adminToken = token
 }
 
 // SetDataDir sets the gateway data directory path for diagnostics and reporting.
@@ -125,6 +134,8 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/ui/", http.StatusFound)
 	})
+	s.mux.HandleFunc("POST /api/login", s.handleLogin)
+	s.mux.HandleFunc("POST /api/logout", s.handleLogout)
 	s.mux.HandleFunc("GET /v1/events/stream", s.handleSSEStreams)
 	s.mux.HandleFunc("GET /v1/doctor", s.handleWebDoctor)
 
@@ -160,6 +171,51 @@ func (s *Server) handleProbe(w http.ResponseWriter, r *http.Request) {
 		"node_id": nodeID,
 		"time":    time.Now().UTC().Format(time.RFC3339),
 	})
+}
+
+func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if !readJSON(w, r, credentialBodyLimit, &in) {
+		return
+	}
+	expectedPass := s.adminPassword
+	if expectedPass == "" {
+		expectedPass = "admin"
+	}
+	if in.Username != "admin" || in.Password != expectedPass {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "invalid username or password")
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     "gateway_token",
+		Value:    s.adminToken,
+		Path:     "/",
+		HttpOnly: false,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   r.TLS != nil,
+		MaxAge:   30 * 24 * 3600,
+	})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":   "ok",
+		"username": "admin",
+		"token":    s.adminToken,
+	})
+}
+
+func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     "gateway_token",
+		Value:    "",
+		Path:     "/",
+		HttpOnly: false,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   r.TLS != nil,
+		MaxAge:   -1,
+	})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func (s *Server) Handler() http.Handler {

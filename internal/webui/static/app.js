@@ -24,22 +24,24 @@
   const metricFailed = document.getElementById('metric-failed');
   const metricUnknown = document.getElementById('metric-unknown');
 
-  // Modals & Token
+  // Modals & Views
   const taskModal = document.getElementById('task-modal');
   const reconcileModal = document.getElementById('reconcile-modal');
-  const tokenModal = document.getElementById('token-modal');
-  const tokenBtn = document.getElementById('token-btn');
-  const tokenInput = document.getElementById('operator-token-input');
-  const closeTokenModal = document.getElementById('close-token-modal');
-  const saveTokenBtn = document.getElementById('save-token-btn');
-  const clearTokenBtn = document.getElementById('clear-token-btn');
+  const loginView = document.getElementById('login-view');
+  const dashboardView = document.getElementById('dashboard-view');
+  const loginForm = document.getElementById('login-form');
+  const loginUsername = document.getElementById('login-username');
+  const loginPassword = document.getElementById('login-password');
+  const loginError = document.getElementById('login-error');
+  const logoutBtn = document.getElementById('logout-btn');
+  const userBadge = document.getElementById('user-badge');
 
   const submitForm = document.getElementById('submit-task-form');
   const submitMessage = document.getElementById('submit-message');
   const runDoctorBtn = document.getElementById('run-doctor-btn');
   const doctorResults = document.getElementById('doctor-results');
 
-  // Token management
+  // Token & Auth management
   const urlParams = new URLSearchParams(window.location.search);
   if (urlParams.has('token')) {
     localStorage.setItem('agent_gateway_token', urlParams.get('token'));
@@ -55,41 +57,69 @@
     return headers;
   }
 
-  function showTokenModal() {
-    if (tokenInput) tokenInput.value = operatorToken;
-    if (tokenModal) tokenModal.classList.add('active');
+  function showLogin(errMsg) {
+    if (loginView) loginView.classList.remove('hidden');
+    if (dashboardView) dashboardView.classList.add('hidden');
+    if (errMsg && loginError) {
+      loginError.textContent = errMsg;
+      loginError.classList.remove('hidden');
+    } else if (loginError) {
+      loginError.classList.add('hidden');
+    }
   }
 
-  function hideTokenModal() {
-    if (tokenModal) tokenModal.classList.remove('active');
+  function showDashboard() {
+    if (loginView) loginView.classList.add('hidden');
+    if (dashboardView) dashboardView.classList.remove('hidden');
+    if (userBadge) userBadge.textContent = '👤 admin';
   }
 
-  if (tokenBtn) tokenBtn.addEventListener('click', showTokenModal);
-  if (closeTokenModal) closeTokenModal.addEventListener('click', hideTokenModal);
-  if (saveTokenBtn) {
-    saveTokenBtn.addEventListener('click', () => {
-      const val = tokenInput.value.trim();
-      operatorToken = val;
-      if (val) {
-        localStorage.setItem('agent_gateway_token', val);
-      } else {
-        localStorage.removeItem('agent_gateway_token');
+  if (loginForm) {
+    loginForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      loginError.classList.add('hidden');
+      const u = loginUsername.value.trim();
+      const p = loginPassword.value;
+      try {
+        const res = await fetch('/api/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username: u, password: p }),
+          credentials: 'same-origin'
+        });
+        if (res.ok) {
+          const data = await res.json();
+          operatorToken = data.token || '';
+          if (operatorToken) {
+            localStorage.setItem('agent_gateway_token', operatorToken);
+          }
+          showDashboard();
+          await fetchTasks();
+          await fetchNodes();
+          connectSSE();
+        } else {
+          loginError.textContent = '账号或密码错误（默认账号: admin / 密码: admin）';
+          loginError.classList.remove('hidden');
+        }
+      } catch (err) {
+        loginError.textContent = '登录请求失败: ' + err;
+        loginError.classList.remove('hidden');
       }
-      hideTokenModal();
-      fetchTasks();
-      fetchNodes();
-      connectSSE();
     });
   }
-  if (clearTokenBtn) {
-    clearTokenBtn.addEventListener('click', () => {
+
+  if (logoutBtn) {
+    logoutBtn.addEventListener('click', async () => {
+      try {
+        await fetch('/api/logout', { method: 'POST', credentials: 'same-origin' });
+      } catch (e) {}
       operatorToken = '';
-      if (tokenInput) tokenInput.value = '';
       localStorage.removeItem('agent_gateway_token');
-      hideTokenModal();
-      fetchTasks();
-      fetchNodes();
-      connectSSE();
+      if (activeSSE) {
+        try { activeSSE.close(); } catch (e) {}
+        activeSSE = null;
+      }
+      showLogin();
     });
   }
 
@@ -112,14 +142,14 @@
   // 2. Fetch Tasks & Nodes
   async function fetchTasks() {
     try {
-      const res = await fetch('/v1/operator/tasks', { headers: authHeaders() });
+      const res = await fetch('/v1/operator/tasks', { headers: authHeaders(), credentials: 'same-origin' });
       if (res.ok) {
         tasks = await res.json();
         renderTasks();
         updateMetrics();
       } else if (res.status === 401) {
         console.warn('Operator authentication required');
-        if (!operatorToken) showTokenModal();
+        showLogin('凭据已失效，请重新登录');
       } else {
         console.error('Failed to load tasks:', res.statusText);
       }
@@ -130,14 +160,14 @@
 
   async function fetchNodes() {
     try {
-      const res = await fetch('/v1/operator/devices', { headers: authHeaders() });
+      const res = await fetch('/v1/operator/devices', { headers: authHeaders(), credentials: 'same-origin' });
       if (res.ok) {
         nodes = await res.json();
         renderNodes();
         updateMetrics();
       } else if (res.status === 401) {
         console.warn('Operator authentication required');
-        if (!operatorToken) showTokenModal();
+        showLogin('凭据已失效，请重新登录');
       } else {
         console.error('Failed to load nodes:', res.statusText);
       }
@@ -564,8 +594,27 @@
   });
 
   // Initialization
-  fetchTasks();
-  fetchNodes();
-  connectSSE();
+  async function init() {
+    try {
+      const res = await fetch('/v1/operator/devices', {
+        headers: authHeaders(),
+        credentials: 'same-origin'
+      });
+      if (res.ok) {
+        nodes = await res.json();
+        showDashboard();
+        renderNodes();
+        updateMetrics();
+        await fetchTasks();
+        connectSSE();
+        return;
+      }
+    } catch (e) {}
+
+    // Show login page if unauthenticated
+    showLogin();
+  }
+
+  init();
 
 })();

@@ -53,6 +53,8 @@ type gatewayInfo struct {
 	DBPath          string
 	ProtocolVersion int
 	OperatorToken   string
+	AdminUsername   string
+	AdminPassword   string
 }
 
 // serveGateway runs the gateway until ctx is cancelled, then shuts it down
@@ -150,13 +152,22 @@ func serveGateway(ctx context.Context, opts gatewayOptions, onReady func(gateway
 		IdleTimeout:       serverIdleTimeout,
 	}
 
+	adminToken := ensureAdminToken(ctx, opts.DataDir, policies, opts.Log)
+	adminPass := os.Getenv("GATEWAY_ADMIN_PASSWORD")
+	if adminPass == "" {
+		adminPass = "admin"
+	}
+	api.SetAdminCredentials(adminPass, adminToken)
+
 	info := gatewayInfo{
 		Addr:            "https://" + listener.Addr().String(),
 		CACertPath:      filepath.Join(opts.DataDir, "ca.crt"),
 		Fingerprint:     ca.Fingerprint(),
 		DBPath:          dbPath,
 		ProtocolVersion: protocol.CurrentProtocolVersion,
-		OperatorToken:   ensureAdminToken(ctx, opts.DataDir, policies, opts.Log),
+		OperatorToken:   adminToken,
+		AdminUsername:   "admin",
+		AdminPassword:   adminPass,
 	}
 	for i := 0; i < opts.Invitations; i++ {
 		invitation, err := ca.GenerateInvitation(opts.InviteTTL)
@@ -347,9 +358,10 @@ func runServer(ctx context.Context, args []string) error {
 			fmt.Printf("pending:     %d invitation(s) from earlier runs are still usable\n", pending)
 		}
 		if info.OperatorToken != "" {
-			fmt.Printf("operator:    %s\n", info.OperatorToken)
-			fmt.Printf("web dashboard: %s/ui/?token=%s\n", reachableAddr(info.Addr, hostList), info.OperatorToken)
+			fmt.Printf("operator tok:%s\n", info.OperatorToken)
 		}
+		fmt.Printf("web dashboard: %s/ui/\n", reachableAddr(info.Addr, hostList))
+		fmt.Printf("web login:     username: %s | password: %s\n", info.AdminUsername, info.AdminPassword)
 		if warning := certHostWarning(address, hostList); warning != "" {
 			fmt.Printf("\nwarning:     %s\n", warning)
 		}

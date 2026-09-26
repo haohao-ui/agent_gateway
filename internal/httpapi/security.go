@@ -79,6 +79,11 @@ func (s *Server) requireOperator(next http.HandlerFunc) http.HandlerFunc {
 			}
 		}
 		if token == "" {
+			if c, err := r.Cookie("gateway_token"); err == nil && c.Value != "" && len(c.Value) <= 1024 {
+				token = c.Value
+			}
+		}
+		if token == "" {
 			writeError(w, 401, "unauthorized", "operator credential required")
 			return
 		}

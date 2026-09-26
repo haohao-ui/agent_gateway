@@ -7,7 +7,33 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <div class="layout">
+  <!-- Login View -->
+  <div id="login-view" class="login-wrapper hidden">
+    <div class="login-card">
+      <div class="login-header">
+        <div class="brand-icon" style="margin: 0 auto 12px; width: 44px; height: 44px; font-size: 22px; display: flex; align-items: center; justify-content: center;">⚡</div>
+        <h2>Agent Gateway 控制台</h2>
+        <p class="login-subtitle">请输入管理员账号密码进入运维看板</p>
+      </div>
+      <form id="login-form" class="login-form">
+        <div class="form-group">
+          <label for="login-username">管理员账号</label>
+          <input type="text" id="login-username" class="form-control" value="admin" required autocomplete="username" />
+        </div>
+        <div class="form-group">
+          <label for="login-password">密码</label>
+          <input type="password" id="login-password" class="form-control" value="admin" placeholder="默认密码: admin" required autocomplete="current-password" />
+        </div>
+        <div id="login-error" class="login-error hidden"></div>
+        <button type="submit" id="login-submit-btn" class="btn btn-primary btn-block">立即登录</button>
+      </form>
+      <div class="login-footer">
+        <span>默认账号 <code>admin</code> / 密码 <code>admin</code></span>
+      </div>
+    </div>
+  </div>
+
+  <div id="dashboard-view" class="layout">
     <!-- Top Header -->
     <header class="header">
       <div class="brand">
@@ -22,7 +48,8 @@
           <span class="dot"></span>
           <span class="text">Connecting...</span>
         </div>
-        <button id="token-btn" class="btn btn-secondary">🔑 凭证</button>
+        <span id="user-badge" class="user-badge">👤 admin</span>
+        <button id="logout-btn" class="btn btn-secondary">退出</button>
         <button id="refresh-btn" class="btn btn-secondary">↻ 刷新</button>
       </div>
     </header>
@@ -259,26 +286,6 @@
         <div class="modal-footer">
           <button class="btn btn-secondary modal-close-btn">取消</button>
           <button id="reconcile-submit-btn" class="btn btn-primary">提交裁决</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- Token Modal -->
-    <div id="token-modal" class="modal">
-      <div class="modal-content" style="max-width: 480px;">
-        <div class="modal-header">
-          <h3>操作员凭据 (Operator Token)</h3>
-          <button class="close-btn" id="close-token-modal">&times;</button>
-        </div>
-        <div class="modal-body" style="padding: 16px 20px;">
-          <p style="margin-bottom: 12px; font-size: 13px; color: var(--text-secondary); line-height: 1.5;">
-            当前网关管理 API 受到操作员凭据强认证保护。请输入网关启动时打印的管理员 Token（或通过 <code>mesh credential issue</code> 签发的 Token）：
-          </p>
-          <input type="password" id="operator-token-input" class="form-control" placeholder="粘贴 Bearer Token..." style="width: 100%; box-sizing: border-box; padding: 10px 12px; margin-bottom: 16px; border-radius: 6px; border: 1px solid var(--border-color); background: var(--bg-tertiary); color: var(--text-primary); font-family: monospace;" />
-          <div style="display: flex; justify-content: flex-end; gap: 8px;">
-            <button id="clear-token-btn" class="btn btn-secondary">清除凭据</button>
-            <button id="save-token-btn" class="btn btn-primary">保存并刷新</button>
-          </div>
         </div>
       </div>
     </div>
