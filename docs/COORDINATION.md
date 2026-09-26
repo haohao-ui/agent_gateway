@@ -119,4 +119,14 @@ Orca 不可用：`Unable to determine Orca.app path from symlink: /usr/local/bin
   - 全仓测试：全包单元测试 PASS、启用 `-race` 零竞态、`gofmt` 规范、`go vet` 零告警、Linux/Windows 交叉编译通过；
   - 交付集成验收报告 `docs/reports/integration-M2-security.md`。
 
+### M2 收尾：Unknown 任务状态核对与恢复机制完成（2026-09-26）
+
+- 主线合入 commit `ec63d2f`（分支 `feat/task-reconcile`）：
+  - `internal/taskstore`：支持节点携带合法 attempt 凭据对 `unknown` 状态任务直接对账完成（`Complete`）；新增操作员 `Requeue`（重排回 `queued` 并防旧节点滞后写入）、`Resolve`（强制人工裁决终态）与 `ListUnknown` 事务方法；
+  - `internal/httpapi`：暴露操作员端点 `/v1/operator/tasks/{id}/requeue`、`/v1/operator/tasks/{id}/resolve`、`GET /v1/operator/tasks?state=unknown`，严格执行角色与节点作用域鉴权；
+  - `cmd/mesh`：新增 `mesh task requeue`、`mesh task resolve`、`mesh task list` 子命令与帮助文档；
+  - 验证结果：全包通过单元测试与 `-race` 竞态检测、`gofmt` 干净、`go vet` 零告警、Linux/Windows 交叉编译成功；
+  - 交付验收报告 `docs/reports/task-reconcile.md`。
+
+
 
