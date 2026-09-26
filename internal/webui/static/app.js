@@ -316,10 +316,11 @@
         actions += `<button class="btn btn-primary btn-sm upgrade-node-btn" data-id="${n.node_id}" style="margin-right:4px;">🚀 更新</button>`;
       }
       if (!isRevoked) {
-        actions += `<button class="btn btn-danger btn-sm revoke-node-btn" data-id="${n.node_id}">撤销</button>`;
+        actions += `<button class="btn btn-warning btn-sm revoke-node-btn" data-id="${n.node_id}" style="margin-right:4px;">撤销</button>`;
       } else {
-        actions += `<button class="btn btn-secondary btn-sm" disabled>已撤销</button>`;
+        actions += `<button class="btn btn-secondary btn-sm" disabled style="margin-right:4px;">已撤销</button>`;
       }
+      actions += `<button class="btn btn-danger btn-sm delete-node-btn" data-id="${n.node_id}" title="从网关中彻底删除该节点">🗑️ 删除</button>`;
 
       return `
         <tr>
@@ -342,6 +343,29 @@
     nodesTableBody.querySelectorAll('.upgrade-node-btn').forEach(btn => {
       btn.addEventListener('click', () => upgradeNode(btn.getAttribute('data-id')));
     });
+    nodesTableBody.querySelectorAll('.delete-node-btn').forEach(btn => {
+      btn.addEventListener('click', () => deleteNode(btn.getAttribute('data-id')));
+    });
+  }
+
+  async function deleteNode(nodeId) {
+    if (!confirm(`确定要从网关中彻底删除节点 [${nodeId}] 吗？\n删除后该节点将从数据库注销。如果节点仍需要使用，需重新运行配对。`)) return;
+    try {
+      const res = await fetch(`/v1/operator/devices/${nodeId}`, {
+        method: 'DELETE',
+        headers: authHeaders(),
+        credentials: 'same-origin'
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        alert(`节点 [${nodeId}] 已成功删除！`);
+        fetchNodes();
+      } else {
+        alert(`删除失败: ${data.message || res.statusText}`);
+      }
+    } catch (e) {
+      alert(`请求异常: ${e.message}`);
+    }
   }
 
   async function restartNode(nodeId) {

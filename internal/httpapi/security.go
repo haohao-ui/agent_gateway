@@ -111,6 +111,8 @@ func (s *Server) registerOperatorRoutes() {
 	s.mux.HandleFunc("GET /v1/operator/tasks", s.requireOperator(s.operatorList))
 	s.mux.HandleFunc("GET /v1/operator/devices", s.requireOperator(s.operatorListDevices))
 	s.mux.HandleFunc("POST /v1/operator/devices/{id}/revoke", s.requireOperator(s.operatorRevoke))
+	s.mux.HandleFunc("DELETE /v1/operator/devices/{id}", s.requireOperator(s.operatorDeleteDevice))
+	s.mux.HandleFunc("POST /v1/operator/devices/{id}/delete", s.requireOperator(s.operatorDeleteDevice))
 	s.mux.HandleFunc("POST /v1/operator/devices/{id}/restart", s.requireOperator(s.operatorRestartDevice))
 	s.mux.HandleFunc("POST /v1/operator/devices/{id}/upgrade", s.requireOperator(s.operatorUpgradeDevice))
 }
@@ -279,6 +281,30 @@ func (s *Server) operatorRevoke(w http.ResponseWriter, r *http.Request) {
 	s.notifyNode(r.PathValue("id"))
 	w.WriteHeader(200)
 }
+
+func (s *Server) operatorDeleteDevice(w http.ResponseWriter, r *http.Request) {
+	nodeID := r.PathValue("id")
+	p := operatorPrincipal(r)
+	if policy.Authorize(p, "device.revoke", nodeID) != nil {
+		writeError(w, 403, "forbidden", "operation not permitted")
+		return
+	}
+	if s.devices == nil {
+		writeError(w, 503, "unavailable", "device registry unavailable")
+		return
+	}
+	if err := s.devices.Delete(r.Context(), nodeID); err != nil {
+		handleStoreError(w, err)
+		return
+	}
+	s.nodeRuntime.Delete(nodeID)
+	s.notifyNode(nodeID)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+		"message": "Device deleted successfully",
+		"node_id": nodeID,
+	})
+}
 type OperatorDeviceView struct {
 	NodeID      string                   `json:"node_id"`
 	Fingerprint string                   `json:"fingerprint"`
@@ -375,6 +401,11 @@ func (s *Server) operatorUpgradeDevice(w http.ResponseWriter, r *http.Request) {
 		scheme = "https"
 	}
 	downloadURL := fmt.Sprintf("%s://%s/download/mesh", scheme, r.Host)
+	if val, ok := s.nodeRuntime.Load(nodeID); ok {
+		if info, ok := val.(NodeRuntimeInfo); ok && info.OS != "" && info.Arch != "" {
+			downloadURL = fmt.Sprintf("%s://%s/download/mesh?arch=%s-%s", scheme, r.Host, info.OS, info.Arch)
+		}
+	}
 	inputData, _ := json.Marshal(map[string]string{
 		"prompt": fmt.Sprintf("MESH_SYS:UPGRADE %s", downloadURL),
 	})

@@ -182,6 +182,30 @@ func (s *Store) Revoke(ctx context.Context, nodeID, actor, reason string) error 
 	})
 }
 
+// Delete completely removes a registered device and its audit history from the store.
+func (s *Store) Delete(ctx context.Context, nodeID string) error {
+	if !validText(nodeID, 128) {
+		return protocol.ErrInvalid
+	}
+	return s.write(ctx, func(tx *sql.Tx) error {
+		var exists bool
+		err := tx.QueryRowContext(ctx, "SELECT 1 FROM devices WHERE node_id=?", nodeID).Scan(&exists)
+		if errors.Is(err, sql.ErrNoRows) {
+			return protocol.ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, "DELETE FROM device_audit WHERE node_id=?", nodeID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, "DELETE FROM devices WHERE node_id=?", nodeID); err != nil {
+			return err
+		}
+		return nil
+	})
+}
+
 // Device represents a registered node certificate binding and its status.
 type Device struct {
 	NodeID      string    `json:"node_id"`

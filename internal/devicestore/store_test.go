@@ -719,3 +719,37 @@ func TestStore_List(t *testing.T) {
 		t.Fatalf("unexpected devices[1]: %+v", devices[1])
 	}
 }
+
+func TestDelete_Device(t *testing.T) {
+	p := newTempDB(t)
+	s := openTestStore(t, p)
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	exp := now.Add(time.Hour)
+	if err := s.Register(ctx, "node-del-test", testValidFingerprint, exp); err != nil {
+		t.Fatalf("Register failed: %v", err)
+	}
+	if err := s.Revoke(ctx, "node-del-test", "admin", "audit trace"); err != nil {
+		t.Fatalf("Revoke failed: %v", err)
+	}
+
+	// Delete device
+	if err := s.Delete(ctx, "node-del-test"); err != nil {
+		t.Fatalf("Delete failed: %v", err)
+	}
+
+	// Deleting again should return ErrNotFound
+	if err := s.Delete(ctx, "node-del-test"); !errors.Is(err, protocol.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+
+	// Listing devices should now be empty
+	list, err := s.List(ctx)
+	if err != nil {
+		t.Fatalf("List failed: %v", err)
+	}
+	if len(list) != 0 {
+		t.Fatalf("expected 0 devices after delete, got %d", len(list))
+	}
+}
