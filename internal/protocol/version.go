@@ -7,7 +7,7 @@ import (
 
 var (
 	// Version represents the baseline semantic release version.
-	Version = "0.1.4"
+	Version = "0.1.5"
 
 	// GitCommit is set via linker flags: -X agent-gateway/internal/protocol.GitCommit=<hash>
 	GitCommit = ""

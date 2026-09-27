@@ -277,9 +277,20 @@ func (s *Server) resolveMeshBinaryPath(arch, ua string) (string, string, error) 
 		}
 	}
 
-	// If a specific arch was requested, do NOT fall back to the host executable
+	// 指定了架构但分发目录里没有对应文件时：若请求的架构与本机一致，直接分发自身
+	// 二进制 —— 全新网关无需先手工部署 dist/ 也能一键接入同架构节点。跨架构请求则
+	// 给出可操作的错误，提示管理员部署签名发行包。
 	if arch != "" {
-		return "", "", os.ErrNotExist
+		if arch == runtime.GOOS+"-"+runtime.GOARCH {
+			if execPath, err := os.Executable(); err == nil {
+				outName := "mesh"
+				if isWindows {
+					outName = "mesh.exe"
+				}
+				return execPath, outName, nil
+			}
+		}
+		return "", "", fmt.Errorf("no %s binary in the distribution directory; deploy the signed release to <data-dir>/dist/ (see docs/INSTALL.md)", arch)
 	}
 
 	// For default download (no arch specified), fallback to current running executable
@@ -440,13 +451,24 @@ func (s *Server) handleCreateInvitation(w http.ResponseWriter, r *http.Request) 
 		scheme = "http"
 	}
 	gatewayURL := fmt.Sprintf("%s://%s", scheme, r.Host)
-	// 一键安装：CA 证书由控制台下载到当前目录，脚本与后续下载都经该 CA 验证 TLS。
+	// 一键安装：控制台同时给出安装脚本的 SHA-256 与网关 CA 指纹，节点侧每一跳都按
+	// 这两个值校验 —— 取脚本用哈希、取 CA 用指纹，之后全部走经该 CA 验证的 TLS。
+	// 这样既不需要用户手动下载 CA，也不会盲信网关。两个值都来自本控制台页面，
+	// 即管理员已认证的会话，是这条信任链的锚。
+	shSum := sha256.Sum256([]byte(signedInstallerSH))
+	psSum := sha256.Sum256([]byte(signedInstallerPS))
+	// 用 && 串成一条命令：任何一步校验失败都必须终止，不能依赖用户的 shell 有 set -e。
 	installCmd := fmt.Sprintf(
-		"curl --cacert ./ca.crt -fsSL %s/download/install.sh | MESH_TOKEN='%s' bash -s -- %s",
-		gatewayURL, invitation.Token, gatewayURL)
+		"curl -kfsSL %[1]s/download/install.sh -o install.sh && \\\n"+
+			"echo \"%[2]s  install.sh\" | (sha256sum -c - 2>/dev/null || shasum -a 256 -c -) && \\\n"+
+			"MESH_TOKEN='%[3]s' MESH_CA_FINGERPRINT='%[4]s' sh install.sh %[1]s",
+		gatewayURL, hex.EncodeToString(shSum[:]), invitation.Token, invitation.ServerFingerprint)
+	// PowerShell 同理：写成单条 if/else 语句，校验失败时不进入安装分支。
 	installCmdPS1 := fmt.Sprintf(
-		"$env:MESH_TOKEN='%s'; ./install.ps1 -Server %s -Ca .\\ca.crt",
-		invitation.Token, gatewayURL)
+		"curl.exe -kfsSL %[1]s/download/install.ps1 -o install.ps1; "+
+			"if ((Get-FileHash install.ps1 -Algorithm SHA256).Hash.ToLower() -ne '%[2]s') { throw 'install.ps1 哈希不匹配，已终止' } "+
+			"else { $env:MESH_TOKEN='%[3]s'; ./install.ps1 -Server %[1]s -CaFingerprint %[4]s }",
+		gatewayURL, hex.EncodeToString(psSum[:]), invitation.Token, invitation.ServerFingerprint)
 
 	isMulti := in.MaxUses > 1 || in.MaxUses == -1
 	writeJSON(w, http.StatusOK, map[string]any{

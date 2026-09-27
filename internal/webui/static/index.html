@@ -146,7 +146,7 @@
           <div class="card-header-flex">
             <div>
               <h2 style="font-size: 16px; margin-bottom: 4px;">🚀 新机器验证安装与配对</h2>
-              <p class="form-desc" style="margin-bottom: 0;">支持<strong>一机一码（单台防重放）</strong>或<strong>一码多用（批量部署多台）</strong>。安装三步：<strong>① 下载 CA 证书</strong>到目标机器当前目录，<strong>② 生成邀请码</strong>，<strong>③ 复制下方命令执行</strong>：</p>
+              <p class="form-desc" style="margin-bottom: 0;">支持<strong>一机一码（单台防重放）</strong>或<strong>一码多用（批量部署多台）</strong>。生成邀请码后，<strong>把控制台给出的命令整段复制到目标机器执行即可</strong>：命令内的脚本哈希与 CA 指纹会对每一跳做校验，无需手动下载 CA。</p>
             </div>
             <div style="display: flex; gap: 8px; flex-wrap: wrap;">
               <a id="btn-download-mesh" href="/download/mesh" class="btn btn-secondary btn-sm" download title="下载通用二进制 (macOS / Linux)">📥 下载 mesh (macOS/Linux)</a>
@@ -181,7 +181,7 @@
               <button class="btn btn-primary btn-sm copy-btn" data-target="node-quick-install-cmd" style="white-space: nowrap;">一键复制</button>
             </div>
             <div id="tip-install-bash" style="font-size: 11.5px; color: var(--text-muted); margin-top: 6px;">
-              💡 <strong>macOS / Linux</strong>：先在目标机器当前目录保存 <code>ca.crt</code>（点上方「下载 CA 证书」），再粘贴执行上方命令。命令与后续下载都经该 CA 验证网关 TLS；配对后按提示手动启动节点。需要发行签名验证时，额外设置 <code>MESH_VERIFY_BIN</code> 与 <code>MESH_RELEASE_KEY</code>。
+              💡 <strong>macOS / Linux</strong>：整段复制执行即可。命令先按哈希校验安装脚本，再按指纹校验网关 CA，之后所有下载都经该 CA 验证的 TLS；配对后按提示手动启动节点。若不方便用 <code>-k</code> 取脚本，可改用「下载 CA 证书」+ <code>--ca ./ca.crt</code> 的严格方式（见文档）。
             </div>
 
             <!-- PowerShell Command Box -->
@@ -190,7 +190,7 @@
               <button class="btn btn-primary btn-sm copy-btn" data-target="node-quick-install-cmd-ps1" style="white-space: nowrap; background: #0284c7;">一键复制</button>
             </div>
             <div id="tip-install-ps1" style="display: none; font-size: 11.5px; color: #7dd3fc; margin-top: 6px;">
-              ⚡ <strong>Windows (PowerShell)</strong>：先在目标机器当前目录保存 <code>ca.crt</code>，把 <code>install.ps1</code> 保存为文件，再执行上方命令。脚本与后续下载都经该 CA 验证网关 TLS；配对后按提示手动启动节点。
+              ⚡ <strong>Windows (PowerShell)</strong>：整段复制执行即可。命令先校验 install.ps1 的哈希，再由脚本按指纹校验网关 CA；配对后按提示手动启动节点。
             </div>
           </div>
         </div>

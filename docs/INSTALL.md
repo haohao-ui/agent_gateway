@@ -88,34 +88,52 @@ sh install.sh --fingerprint 88bdfc0623fa313e29567c48b1c64fc0cba6f0cb9afe07c890c8
 
 ### 方式一：一键安装并配对节点
 
-在网关控制台「新机器验证安装与配对」中：**① 点「下载 CA 证书」**，保存到目标机器当前目录为 `ca.crt`；**② 生成邀请码**；**③ 在目标机器执行控制台给出的命令**：
+在网关控制台「新机器验证安装与配对」中生成邀请码，然后把控制台给出的**整段命令**复制到目标机器执行。macOS / Linux：
 
 ```sh
-curl --cacert ./ca.crt -fsSL https://<网关>:8443/download/install.sh | MESH_TOKEN='<邀请码>' bash -s -- https://<网关>:8443
+curl -kfsSL https://<网关>:8443/download/install.sh -o install.sh
+echo "<脚本哈希>  install.sh" | (sha256sum -c - 2>/dev/null || shasum -a 256 -c -)
+MESH_TOKEN='<邀请码>' MESH_CA_FINGERPRINT='<CA指纹>' sh install.sh https://<网关>:8443
 ```
 
 Windows（`curl.exe` 为 Windows 10 1803+ 自带）：
 
 ```powershell
-curl.exe --cacert .\ca.crt -fsSL https://<网关>:8443/download/install.ps1 -o install.ps1
-$env:MESH_TOKEN='<邀请码>'; ./install.ps1 -Server https://<网关>:8443 -Ca .\ca.crt
+curl.exe -kfsSL https://<网关>:8443/download/install.ps1 -o install.ps1
+if ((Get-FileHash install.ps1 -Algorithm SHA256).Hash.ToLower() -ne '<脚本哈希>') { throw 'install.ps1 哈希不匹配' }
+$env:MESH_TOKEN='<邀请码>'; ./install.ps1 -Server https://<网关>:8443 -CaFingerprint <CA指纹>
+```
+
+**信任链**（`-k` 只用于取回安装脚本本身，其它每一跳都有校验）：
+
+| 步骤 | 校验方式 | 锚点 |
+|---|---|---|
+| 取安装脚本 | 哈希比对 | 控制台页面给出的脚本哈希 |
+| 取网关 CA | 指纹比对（证书 DER 的 SHA-256） | 控制台页面给出的 CA 指纹 |
+| 取 mesh 二进制、配对 | 用上一步确认的 CA 校验 TLS | 已确认的 CA |
+
+两个值都来自管理员已登录的控制台页面，因此**不盲信网关**，也**不需要用户手动搬运 CA 文件**。脚本会打印实际 CA 指纹供与网关终端/控制台显示的值核对。
+
+若目标机器不便使用 `-k`，可走完全不使用 `-k` 的严格方式（从控制台「下载 CA 证书」取 `ca.crt`）：
+
+```sh
+curl --cacert ./ca.crt -fsSL https://<网关>:8443/download/install.sh | MESH_TOKEN='<邀请码>' bash -s -- https://<网关>:8443 --ca ./ca.crt
 ```
 
 脚本行为：
 
-1. 用你提供的 CA 验证网关 TLS（`--cacert`），**首次连接就已认证**，不盲信网关；
-2. 打印 CA 指纹（DER 的 SHA-256），可与网关终端/控制台显示的值带外核对；
-3. 下载对应平台的 `mesh` 与三份许可声明，比对网关提供的 SHA-256；
-4. 用邀请码完成 mTLS 配对，邀请码只经环境变量或文件传递，**不进入 URL 或 argv**；
-5. 默认安装到 `$HOME/.agent-mesh-node`，**不自动启动节点**；加 `--start` 可配对后直接后台拉起。
+1. 准备可信 CA：来自 `--ca` 文件，或从网关取回后按 `--ca-fingerprint` 校验（两者都给则都校验）；
+2. 下载对应平台的 `mesh` 与三份许可声明，并比对网关提供的 SHA-256；
+3. 用邀请码完成 mTLS 配对，邀请码只经环境变量或文件传递，**不进入 URL 或 argv**；
+4. 默认安装到 `$HOME/.agent-mesh-node`，**不自动启动节点**；加 `--start` 可配对后直接后台拉起。
 
-常用参数：`--ca`、`--token`、`--token-file`、`--dir`、`--start`。
+常用参数：`--ca`、`--ca-fingerprint`、`--token`、`--token-file`、`--dir`、`--start`。需要 `curl` 或 `wget` 之一。
 
 **校验等级**由脚本明确打印，不掩饰：
 
 | 条件 | 等级 |
 |---|---|
-| 默认 | 经 CA 验证的 HTTPS 通道（信任锚是你手里这份 CA 证书） |
+| 默认 | 经 CA 验证的 HTTPS 通道（CA 来自文件或已按指纹确认） |
 | 设置 `MESH_VERIFY_BIN` + `MESH_RELEASE_KEY` | 完整验签（独立验证器做发行签名验证，逐文件校验） |
 
 强校验示例（需要自带独立可信的验证器与发行公钥，网关需把签名发行包部署到 `<data-dir>/dist/`）：

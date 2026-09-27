@@ -1369,24 +1369,19 @@ ${JSON.stringify(mcpJson, null, 2)}
       if (res.ok) {
         const data = await res.json();
         const origin = window.location.origin;
-        const httpsNote = origin.indexOf('http://') === 0
+        const httpsNote = (data.gateway_url || origin).indexOf('http://') === 0
           ? '\n注意：当前控制台走明文端口，请把命令里的 http 换成网关的 https 地址（默认 8443 端口）。'
           : '';
         if (quickInstallEl) {
           quickInstallEl.textContent =
-            `① 下载 CA 证书到目标机器当前目录（保存为 ca.crt）\n` +
-            `② 在目标机器执行：\n` +
-            `curl --cacert ./ca.crt -fsSL ${origin}/download/install.sh | MESH_TOKEN='${data.token}' bash -s -- ${origin}` +
-            httpsNote;
+            `把下面全部命令复制到目标机器执行（无需手动下载 CA）：\n` +
+            (data.install_cmd_bash || '') + httpsNote;
         }
         const quickInstallPs1 = document.getElementById('node-quick-install-cmd-ps1');
         if (quickInstallPs1) {
           quickInstallPs1.textContent =
-            `① 下载 CA 证书到目标机器当前目录（保存为 ca.crt）\n` +
-            `② 在目标机器执行：\n` +
-            `curl.exe --cacert .\\ca.crt -fsSL ${origin}/download/install.ps1 -o install.ps1\n` +
-            `$env:MESH_TOKEN='${data.token}'; ./install.ps1 -Server ${origin} -Ca .\\ca.crt` +
-            httpsNote;
+            `把下面全部命令复制到目标机器的 PowerShell 执行（无需手动下载 CA）：\n` +
+            (data.install_cmd_ps1 || '') + httpsNote;
         }
         if (badgeEl) {
           const expTime = new Date(data.expires_at).toLocaleTimeString();

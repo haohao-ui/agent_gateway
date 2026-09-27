@@ -49,13 +49,7 @@ mesh server
 
 **3. 接入一台工作节点**
 
-在控制台「新机器验证安装与配对」里下载 CA 证书、生成邀请码，然后在目标机器执行控制台给出的那一行命令即可：
-
-```sh
-curl --cacert ./ca.crt -fsSL https://<网关>:8443/download/install.sh | MESH_TOKEN='<邀请码>' bash -s -- https://<网关>:8443
-```
-
-脚本用你提供的 CA 验证网关 TLS，下载并比对哈希，完成 mTLS 配对；默认不自动启动节点。需要发行签名验证时额外设置 `MESH_VERIFY_BIN` 与 `MESH_RELEASE_KEY`，详见[安装与部署](docs/INSTALL.md)。
+在控制台「新机器验证安装与配对」生成邀请码，再把控制台给出的**整段命令**复制到目标机器执行即可：命令内的安装脚本哈希与网关 CA 指纹会对每一跳做校验，因此不需要手动搬运 CA 文件，也不盲信网关。脚本会下载并校验 `mesh`、完成 mTLS 配对，默认不自动启动节点。需要发行签名验证时额外设置 `MESH_VERIFY_BIN` 与 `MESH_RELEASE_KEY`，详见[安装与部署](docs/INSTALL.md)。
 
 ## 核心能力
 
