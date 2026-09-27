@@ -1,6 +1,6 @@
 # 开发协作台账
 
-协调者：Codex。新项目 /Users/yang/tools/code/agent-gateway；旧 Python 项目只读。
+协调者：Codex。新项目为本仓库 agent-gateway；旧 Python 项目（agent-mesh）只读，不在本仓库内。
 
 ## 所有权
 
@@ -23,8 +23,8 @@ Orca 不可用：`Unable to determine Orca.app path from symlink: /usr/local/bin
 ## 首批执行记录
 
 - 基线提交：`3e8f895`，分支 main。
-- Claude worktree：`/Users/yang/tools/code/agent-gateway-worktrees/claude-m1`，分支 `worker/claude-m1`。
-- agy worktree：`/Users/yang/tools/code/agent-gateway-worktrees/agy-m1`，分支 `worker/agy-m1`。
+- Claude worktree：`../agent-gateway-worktrees/claude-m1`（相对本仓库根目录），分支 `worker/claude-m1`。
+- agy worktree：`../agent-gateway-worktrees/agy-m1`（相对本仓库根目录），分支 `worker/agy-m1`。
 - Claude 采用 print + acceptEdits 与受限的 Go/格式化/读取 Git shell 允许列表；没有启用 bypassPermissions。
 - Claude 日志：`.coordination/claude-m1.jsonl`、`.coordination/claude-m1.stderr`；最终报告目标 `docs/reports/claude-M1.md`（开发 worktree 内）。
 - agy 已在对应 worktree 使用 `--mode accept-edits --print ... --output-format json` 提交详细 M1-B 提示词；日志为 `.coordination/agy-m1.jsonl` 和 `.coordination/agy-m1.stderr`。未启用 skip-permissions。
