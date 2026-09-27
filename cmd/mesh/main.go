@@ -25,7 +25,12 @@ usage:
   agent-gateway <command> [flags]
 
 [Control Plane / Gateway]
-  server [flags]                  run the gateway: pairing, mTLS task API, WebUI and /mcp
+  server [flags]                  run the gateway (foreground): pairing, mTLS task API, WebUI and /mcp
+  server start [flags]            start gateway daemon in background
+  server stop [flags]             stop running gateway daemon
+  server restart [flags]          restart running gateway daemon
+  server status [flags]           display gateway process status and recent logs
+  server reload [flags]           reload gateway configuration
   invite [flags]                  mint another pairing invitation for a running gateway
   release keygen|sign|verify|fetch manage signed distributions
   credential issue|revoke         manage operator credentials locally
@@ -33,7 +38,12 @@ usage:
 
 [Worker Node]
   pair [flags]                    enrol this machine with a gateway (node side)
-  node [flags]                    run the task loop for this machine
+  node [flags]                    run the task loop for this machine (foreground)
+  node start [flags]              start node daemon process in background
+  node stop [flags]               stop running node daemon
+  node restart [flags]            restart running node daemon
+  node status [flags]             display node process status, config and recent logs
+  node reload [flags]             reload node configuration
   node list [flags]               query enrolled node/device status
 
 [Operator & Integrations]
@@ -65,16 +75,52 @@ func main() {
 	case "release":
 		err = runRelease(ctx, os.Args[2:])
 	case "server":
-		err = runServer(ctx, os.Args[2:])
+		if len(os.Args) > 2 {
+			switch os.Args[2] {
+			case "start":
+				err = runServerStart(os.Args[3:])
+			case "stop":
+				err = runServerStop(os.Args[3:])
+			case "restart":
+				err = runServerRestart(os.Args[3:])
+			case "status":
+				err = runServerStatus(os.Args[3:])
+			case "reload":
+				err = runServerReload(os.Args[3:])
+			case "run":
+				err = runServer(ctx, os.Args[3:])
+			default:
+				err = runServer(ctx, os.Args[2:])
+			}
+		} else {
+			err = runServer(ctx, nil)
+		}
 	case "invite":
 		err = runInvite(ctx, os.Args[2:])
 	case "pair":
 		err = runPair(ctx, os.Args[2:])
 	case "node":
-		if len(os.Args) > 2 && os.Args[2] == "list" {
-			err = runDeviceList(ctx, os.Args[3:])
+		if len(os.Args) > 2 {
+			switch os.Args[2] {
+			case "list":
+				err = runDeviceList(ctx, os.Args[3:])
+			case "start":
+				err = runNodeStart(os.Args[3:])
+			case "stop":
+				err = runNodeStop(os.Args[3:])
+			case "restart":
+				err = runNodeRestart(os.Args[3:])
+			case "status":
+				err = runNodeStatus(os.Args[3:])
+			case "reload":
+				err = runNodeReload(os.Args[3:])
+			case "run":
+				err = runNode(ctx, os.Args[3:])
+			default:
+				err = runNode(ctx, os.Args[2:])
+			}
 		} else {
-			err = runNode(ctx, os.Args[2:])
+			err = runNode(ctx, nil)
 		}
 	case "credential":
 		err = runCredential(ctx, os.Args[2:])

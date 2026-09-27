@@ -138,6 +138,7 @@ func (c *GatewayClient) Claim(ctx context.Context, leaseSeconds int) (*protocol.
 		OS:                   c.osName,
 		Arch:                 c.arch,
 		Hostname:             hostname,
+		MachineID:            protocol.GetMachineID(),
 		Agents:               c.agents,
 		StartedAt:            c.startedAt,
 	}

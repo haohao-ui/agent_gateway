@@ -20,16 +20,45 @@ import (
 	"agent-gateway/internal/protocol"
 )
 
+func resolvePolicyStoreDir(specifiedDir string) (string, error) {
+	candidates := []string{}
+	if specifiedDir != "" {
+		candidates = append(candidates, specifiedDir)
+	}
+	if def := defaultServerDataDir(); def != "" && def != specifiedDir {
+		candidates = append(candidates, def)
+	}
+	candidates = append(candidates, "./gateway-data")
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		candidates = append(candidates, filepath.Join(home, ".agent-mesh", "gateway-data"))
+		candidates = append(candidates, filepath.Join(home, ".agent-mesh-server"))
+	}
+
+	seen := make(map[string]bool)
+	for _, dir := range candidates {
+		clean := filepath.Clean(dir)
+		if seen[clean] {
+			continue
+		}
+		seen[clean] = true
+		if _, err := os.Stat(filepath.Join(clean, "policy.sqlite")); err == nil {
+			return clean, nil
+		}
+	}
+	return specifiedDir, fmt.Errorf("open gateway credential store: policy.sqlite not found in %s (also checked %s). Please start 'mesh server' first or specify --data-dir", specifiedDir, strings.Join(candidates[1:], ", "))
+}
+
 func runCredential(ctx context.Context, args []string) error {
 	if len(args) == 0 {
 		return errors.New("usage: mesh credential issue|revoke [--data-dir DIR] [flags]")
 	}
 	cmd := newCommand("credential "+args[0], "Trusted local credential administration. Requires access to the gateway data directory.")
-	dir := cmd.flags.String("data-dir", envString("MESH_DATA_DIR", "./gateway-data"), "gateway data directory")
+	dir := cmd.flags.String("data-dir", envString("MESH_DATA_DIR", defaultServerDataDir()), "gateway data directory")
 	role := cmd.flags.String("role", "admin", "admin, operator, or viewer")
 	nodes := cmd.flags.String("nodes", "", "comma separated node scopes (empty for admin)")
 	ttl := cmd.flags.Duration("ttl", 24*time.Hour, "credential lifetime (maximum 24 hours)")
 	output := cmd.flags.String("out", "", "new token file (optional; prints to stdout if omitted)")
+	force := cmd.flags.Bool("force", false, "overwrite token file if it already exists")
 	if err := cmd.flags.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -42,9 +71,10 @@ func runCredential(ctx context.Context, args []string) error {
 	if args[0] == "revoke" && cmd.flags.NArg() != 1 {
 		return errors.New("revoke requires one principal ID")
 	}
-	dataDir := *dir
-	if _, err := os.Stat(filepath.Join(dataDir, "policy.sqlite")); err != nil {
-		return fmt.Errorf("open specified gateway credential store: %w", err)
+
+	dataDir, err := resolvePolicyStoreDir(*dir)
+	if err != nil {
+		return err
 	}
 
 	store, err := policy.Open(filepath.Join(dataDir, "policy.sqlite"))
@@ -58,28 +88,51 @@ func runCredential(ctx context.Context, args []string) error {
 	if *ttl <= 0 || *ttl > 24*time.Hour {
 		return errors.New("credential lifetime must be within 24 hours")
 	}
+
+	r := strings.ToLower(strings.TrimSpace(*role))
+	if (r == "operator" || r == "viewer") && strings.TrimSpace(*nodes) == "" {
+		return fmt.Errorf("role %q requires at least one node scope via --nodes <node1,node2...> (or use --role admin for global cluster access)", *role)
+	}
+
+	expiresAt := time.Now().Add(*ttl)
 	if *output == "" {
-		p, token, err := store.Issue(ctx, policy.Role(*role), splitList(*nodes), time.Now().Add(*ttl))
+		p, token, err := store.Issue(ctx, policy.Role(*role), splitList(*nodes), expiresAt)
 		if err != nil {
 			return err
 		}
-		fmt.Printf("principal: %s\nrole:      %s\ntoken:     %s\n", p.ID, p.Role, token)
+		fmt.Printf("principal: %s\nrole:      %s\nexpires:   %s\ntoken:     %s\n", p.ID, p.Role, expiresAt.Format(time.RFC3339), token)
 		return nil
 	}
 
-	// Reserve the destination before creating a credential, refusing existing files/symlinks.
-	file, err := os.OpenFile(*output, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	outDir := filepath.Dir(*output)
+	if outDir != "" && outDir != "." {
+		if err := os.MkdirAll(outDir, 0o755); err != nil {
+			return fmt.Errorf("create token directory: %w", err)
+		}
+	}
+
+	openFlags := os.O_WRONLY | os.O_CREATE
+	if *force {
+		openFlags |= os.O_TRUNC
+	} else {
+		openFlags |= os.O_EXCL
+	}
+
+	file, err := os.OpenFile(*output, openFlags, 0o600)
 	if err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("token file %s already exists (use --force to overwrite)", *output)
+		}
 		return err
 	}
 	ok := false
 	defer func() {
 		file.Close()
-		if !ok {
+		if !ok && !*force {
 			os.Remove(*output)
 		}
 	}()
-	p, token, err := store.Issue(ctx, policy.Role(*role), splitList(*nodes), time.Now().Add(*ttl))
+	p, token, err := store.Issue(ctx, policy.Role(*role), splitList(*nodes), expiresAt)
 	if err != nil {
 		return err
 	}
@@ -96,7 +149,7 @@ func runCredential(ctx context.Context, args []string) error {
 		return errors.New("token file write failed; credential revoked")
 	}
 	ok = true
-	fmt.Printf("principal: %s\nrole:      %s\ntoken file: %s\n", p.ID, p.Role, *output)
+	fmt.Printf("principal: %s\nrole:      %s\nexpires:   %s\ntoken file: %s\n", p.ID, p.Role, expiresAt.Format(time.RFC3339), *output)
 	return nil
 }
 

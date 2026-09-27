@@ -139,6 +139,7 @@
           await fetchNodes();
           connectSSE();
           loadTLSStatus();
+          loadNetworkSettings();
           updateQuickInstall();
         } else {
           loginError.textContent = res.status === 429 ? '登录尝试过于频繁，请稍后重试。' : '账号或密码错误（初始密码见服务器 admin.password 文件）';
@@ -484,9 +485,15 @@
         const isExpanded = expandedToolsNodes.has(n.node_id);
         const displayLimit = 3;
         const visible = isExpanded ? n.agents : n.agents.slice(0, displayLimit);
+        const allowedList = Array.isArray(n.allowed_tools) ? n.allowed_tools : [];
 
         const tags = visible.map(a => {
-          return `<span class="badge agent-tool-tag" data-node="${escapeHtml(n.node_id)}" style="font-size:10px;margin:2px;cursor:pointer;background:rgba(56,189,248,0.15);color:var(--primary);border:1px solid rgba(56,189,248,0.3);" title="点击查看工具物理绝对路径与详情">⚡ ${escapeHtml(a.id)}</span>`;
+          const isAllowed = allowedList.length === 0 || allowedList.includes(a.id) || allowedList.includes('*');
+          if (isAllowed) {
+            return `<span class="badge agent-tool-tag" data-node="${escapeHtml(n.node_id)}" style="font-size:10px;margin:2px;cursor:pointer;background:rgba(16,185,129,0.18);color:#34d399;border:1px solid rgba(16,185,129,0.4);" title="已授权执行（点击配置权限与详情）">✓ ⚡ ${escapeHtml(a.id)}</span>`;
+          } else {
+            return `<span class="badge agent-tool-tag" data-node="${escapeHtml(n.node_id)}" style="font-size:10px;margin:2px;cursor:pointer;background:rgba(148,163,184,0.1);color:#94a3b8;border:1px dashed rgba(148,163,184,0.3);text-decoration:line-through;" title="未授权执行（点击打勾授权）">🔒 ${escapeHtml(a.id)}</span>`;
+          }
         }).join('');
 
         let controlBtns = '';
@@ -494,16 +501,16 @@
           if (isExpanded) {
             controlBtns = `
               <button type="button" class="btn btn-secondary btn-sm toggle-tools-btn" data-node="${escapeHtml(n.node_id)}" style="font-size:10px;padding:2px 8px;margin:2px;background:rgba(250,204,21,0.12);border:1px solid rgba(250,204,21,0.3);color:#facc15;" title="收起剩余工具标签">🔼 收起</button>
-              <button type="button" class="btn btn-secondary btn-sm view-tools-modal-btn" data-node="${escapeHtml(n.node_id)}" style="font-size:10px;padding:2px 8px;margin:2px;background:rgba(56,189,248,0.12);border:1px solid rgba(56,189,248,0.4);color:#38bdf8;" title="弹窗查看所有工具绝对物理路径">📋 探测路径清单</button>
+              <button type="button" class="btn btn-secondary btn-sm view-tools-modal-btn" data-node="${escapeHtml(n.node_id)}" style="font-size:10px;padding:2px 8px;margin:2px;background:rgba(56,189,248,0.12);border:1px solid rgba(56,189,248,0.4);color:#38bdf8;" title="弹窗配置工具打勾授权与查看路径">⚙️ 权限与路径</button>
             `;
           } else {
             controlBtns = `
               <button type="button" class="btn btn-secondary btn-sm toggle-tools-btn" data-node="${escapeHtml(n.node_id)}" style="font-size:10px;padding:2px 8px;margin:2px;background:rgba(56,189,248,0.15);border:1px solid rgba(56,189,248,0.4);color:#38bdf8;font-weight:600;" title="点击就地展开该节点全部 ${total} 个工具名称">+${total - displayLimit} 全部 (${total}个)</button>
-              <button type="button" class="btn btn-secondary btn-sm view-tools-modal-btn" data-node="${escapeHtml(n.node_id)}" style="font-size:10px;padding:2px 6px;margin:2px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:var(--text-muted);" title="弹窗查看所有工具绝对物理路径">📋 路径清单</button>
+              <button type="button" class="btn btn-secondary btn-sm view-tools-modal-btn" data-node="${escapeHtml(n.node_id)}" style="font-size:10px;padding:2px 6px;margin:2px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:var(--text-muted);" title="弹窗配置工具打勾授权与查看路径">⚙️ 权限配置</button>
             `;
           }
         } else {
-          controlBtns = `<button type="button" class="btn btn-secondary btn-sm view-tools-modal-btn" data-node="${escapeHtml(n.node_id)}" style="font-size:10px;padding:2px 6px;margin:2px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:var(--text-muted);" title="查看工具详情">📋 详情</button>`;
+          controlBtns = `<button type="button" class="btn btn-secondary btn-sm view-tools-modal-btn" data-node="${escapeHtml(n.node_id)}" style="font-size:10px;padding:2px 6px;margin:2px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:var(--text-muted);" title="配置工具权限与查看详情">⚙️ 权限配置</button>`;
         }
         agentsHtml = `<div style="display:flex;flex-wrap:wrap;align-items:center;">${tags}${controlBtns}</div>`;
       }
@@ -601,24 +608,46 @@
     const titleEl = document.getElementById('agent-tools-modal-title');
     const subtitleEl = document.getElementById('agent-tools-modal-subtitle');
     const tbody = document.getElementById('agent-tools-modal-tbody');
+    const statusMsg = document.getElementById('agent-tools-save-status');
+    const btnSelectAll = document.getElementById('btn-tools-select-all');
+    const btnSelectNone = document.getElementById('btn-tools-select-none');
     if (!modal || !tbody) return;
 
+    if (statusMsg) {
+      statusMsg.className = 'alert hidden';
+      statusMsg.textContent = '';
+    }
+
     const hostname = n.hostname || n.node_id;
-    titleEl.textContent = `🖥️ ${hostname} 工具链清单 (共 ${n.agents ? n.agents.length : 0} 个)`;
-    subtitleEl.textContent = `该节点通过本地系统 PATH (LookPath) 及应用目录真实探测到的可用工具及二进制安装路径：`;
+    const allowedList = Array.isArray(n.allowed_tools) ? n.allowed_tools : [];
+    titleEl.textContent = `🖥️ ${hostname} 工具链清单与权限配置 (共 ${n.agents ? n.agents.length : 0} 个)`;
+    subtitleEl.textContent = `该节点通过本地系统 PATH 及环境探测到的可用工具。打勾授权后允许大模型与操作员远程调用执行：`;
 
     if (!Array.isArray(n.agents) || n.agents.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="5" class="empty-state">该节点尚未探测到任何已安装的 Agent 工具</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="6" class="empty-state">该节点尚未探测到任何已安装的 Agent 工具</td></tr>';
     } else {
       tbody.innerHTML = n.agents.map(a => {
+        // 如果 allowed_tools 尚无配置记录，默认打勾全选；如果已有配置，严格按列表判断
+        const isChecked = allowedList.length === 0 || allowedList.includes(a.id) || allowedList.includes('*');
         const pathStr = a.path
           ? `<code style="font-size:11px;color:#38bdf8;word-break:break-all;">${escapeHtml(a.path)}</code>`
           : '<span style="font-size:11px;color:var(--text-muted);">(系统 PATH 自动发现)</span>';
         const kindBadge = a.kind === 'gui'
           ? '<span class="badge" style="background:rgba(168,85,247,0.2);color:#c084fc;font-size:10px;">GUI 应用</span>'
           : '<span class="badge" style="background:rgba(56,189,248,0.2);color:#38bdf8;font-size:10px;">CLI 工具</span>';
+
+        const authBadge = isChecked
+          ? '<span class="badge status-auth-badge" style="background:rgba(16,185,129,0.2);color:#34d399;font-size:10px;margin-left:4px;">🟢 允许调用</span>'
+          : '<span class="badge status-auth-badge" style="background:rgba(148,163,184,0.15);color:#94a3b8;font-size:10px;margin-left:4px;">⚪ 未授权</span>';
+
         return `
           <tr>
+            <td style="text-align:center; vertical-align:middle;">
+              <label style="display:inline-flex; align-items:center; cursor:pointer;">
+                <input type="checkbox" class="tool-auth-checkbox" data-tool="${escapeHtml(a.id)}" ${isChecked ? 'checked' : ''} style="cursor:pointer; width:16px; height:16px;">
+                ${authBadge}
+              </label>
+            </td>
             <td><strong>⚡ ${escapeHtml(a.id)}</strong></td>
             <td>${escapeHtml(a.name || a.id)}</td>
             <td>${kindBadge}</td>
@@ -628,10 +657,86 @@
         `;
       }).join('');
 
+      // Auto-save function on checkbox change
+      async function saveNodeToolsPermission() {
+        const checkboxes = tbody.querySelectorAll('.tool-auth-checkbox');
+        const selected = [];
+        checkboxes.forEach(cb => {
+          if (cb.checked) selected.push(cb.getAttribute('data-tool'));
+          const badge = cb.parentElement.querySelector('.status-auth-badge');
+          if (badge) {
+            if (cb.checked) {
+              badge.textContent = '🟢 允许调用';
+              badge.style.background = 'rgba(16,185,129,0.2)';
+              badge.style.color = '#34d399';
+            } else {
+              badge.textContent = '⚪ 未授权';
+              badge.style.background = 'rgba(148,163,184,0.15)';
+              badge.style.color = '#94a3b8';
+            }
+          }
+        });
+
+        if (statusMsg) {
+          statusMsg.className = 'alert';
+          statusMsg.textContent = '正在保存工具链权限...';
+          statusMsg.classList.remove('hidden');
+        }
+
+        try {
+          const res = await fetch(`/v1/operator/devices/${encodeURIComponent(nodeId)}/tools`, {
+            method: 'POST',
+            headers: authHeaders({ 'Content-Type': 'application/json' }),
+            credentials: 'same-origin',
+            body: JSON.stringify({ tools: selected })
+          });
+          const data = await res.json().catch(() => ({}));
+          if (res.ok) {
+            n.allowed_tools = selected;
+            renderNodes();
+            if (statusMsg) {
+              statusMsg.className = 'alert alert-success';
+              statusMsg.textContent = `✓ 权限配置已保存！已授权 ${selected.length} 个工具链可供远程执行。`;
+              setTimeout(() => {
+                if (statusMsg) statusMsg.classList.add('hidden');
+              }, 2500);
+            }
+          } else {
+            if (statusMsg) {
+              statusMsg.className = 'alert alert-danger';
+              statusMsg.textContent = `保存失败: ${data.message || res.statusText}`;
+            }
+          }
+        } catch (err) {
+          if (statusMsg) {
+            statusMsg.className = 'alert alert-danger';
+            statusMsg.textContent = `网络错误: ${err.message}`;
+          }
+        }
+      }
+
+      // Bind checkbox change
+      tbody.querySelectorAll('.tool-auth-checkbox').forEach(cb => {
+        cb.addEventListener('change', saveNodeToolsPermission);
+      });
+
+      // Bind Batch Select Buttons
+      if (btnSelectAll) {
+        btnSelectAll.onclick = () => {
+          tbody.querySelectorAll('.tool-auth-checkbox').forEach(cb => { cb.checked = true; });
+          saveNodeToolsPermission();
+        };
+      }
+      if (btnSelectNone) {
+        btnSelectNone.onclick = () => {
+          tbody.querySelectorAll('.tool-auth-checkbox').forEach(cb => { cb.checked = false; });
+          saveNodeToolsPermission();
+        };
+      }
+
       tbody.querySelectorAll('.modal-dispatch-tool-btn').forEach(btn => {
         btn.addEventListener('click', () => {
-          modal.classList.add('hidden');
-          modal.style.display = 'none';
+          closeAllModals();
           dispatchTaskToNode(btn.getAttribute('data-node'));
           selectToolCapability(btn.getAttribute('data-cap'));
         });
@@ -639,7 +744,7 @@
     }
 
     modal.classList.remove('hidden');
-    modal.style.display = 'flex';
+    modal.style.removeProperty('display');
   }
 
   async function deleteNode(nodeId) {
@@ -732,6 +837,7 @@
 
     renderTaskModalData(currentTask);
     taskModal.classList.remove('hidden');
+    taskModal.style.display = '';
 
     // 立即向后端拉取最新的单任务精确状态与完整输出
     await fetchSingleTaskDetail(taskId);
@@ -822,14 +928,16 @@
   function openReconcileModal(taskId) {
     document.getElementById('reconcile-task-id').textContent = taskId;
     reconcileModal.classList.remove('hidden');
+    reconcileModal.style.display = '';
   }
 
   const agentToolsModal = document.getElementById('agent-tools-modal');
 
   function closeAllModals() {
-    if (taskModal) { taskModal.classList.add('hidden'); taskModal.style.display = 'none'; }
-    if (reconcileModal) { reconcileModal.classList.add('hidden'); reconcileModal.style.display = 'none'; }
-    if (agentToolsModal) { agentToolsModal.classList.add('hidden'); agentToolsModal.style.display = 'none'; }
+    document.querySelectorAll('.modal').forEach(m => {
+      m.classList.add('hidden');
+      m.style.removeProperty('display');
+    });
     if (detailPollTimer) {
       clearInterval(detailPollTimer);
       detailPollTimer = null;
@@ -1032,6 +1140,7 @@
 
   // 7. Server-Sent Events (SSE) Stream
   let activeSSE = null;
+  let sseErrorTimer = null;
   function connectSSE() {
     if (activeSSE) {
       try { activeSSE.close(); } catch (e) {}
@@ -1043,8 +1152,12 @@
     activeSSE = sse;
 
     sse.onopen = () => {
+      if (sseErrorTimer) {
+        clearTimeout(sseErrorTimer);
+        sseErrorTimer = null;
+      }
       statusIndicator.className = 'status-indicator online';
-      statusIndicator.querySelector('.text').textContent = '● LIVE';
+      statusIndicator.querySelector('.text').textContent = 'LIVE';
     };
 
     sse.onmessage = (event) => {
@@ -1057,8 +1170,13 @@
     };
 
     sse.onerror = () => {
-      statusIndicator.className = 'status-indicator offline';
-      statusIndicator.querySelector('.text').textContent = '○ Reconnecting...';
+      // 增加防抖缓冲：避免单次网络轻微抖动造成状态频繁跳动
+      if (!sseErrorTimer) {
+        sseErrorTimer = setTimeout(() => {
+          statusIndicator.className = 'status-indicator offline';
+          statusIndicator.querySelector('.text').textContent = 'Reconnecting...';
+        }, 3000);
+      }
     };
   }
 
@@ -1109,7 +1227,13 @@
   }
 
   // MCP Configuration & Collaboration Docs
-  function updateMCPDocs() {
+  let currentActiveMCPToken = localStorage.getItem('agent_mesh_mcp_token') || '';
+
+  function updateMCPDocs(tokenOverride) {
+    if (tokenOverride) {
+      currentActiveMCPToken = tokenOverride;
+      localStorage.setItem('agent_mesh_mcp_token', tokenOverride);
+    }
     const origin = window.location.origin;
     const mcpUrl = `${origin}/mcp`;
     const fullUrl = mcpUrl;
@@ -1123,14 +1247,18 @@
 
     if (elFullUrl) elFullUrl.textContent = fullUrl;
     if (elEndpoint) elEndpoint.textContent = mcpUrl;
-    if (elToken) elToken.textContent = '使用 mesh credential issue --out 签发独立凭据';
     if (elDoubaoUrl) elDoubaoUrl.textContent = fullUrl;
+
+    const effectiveToken = currentActiveMCPToken || '<请点击上方按钮签发访问令牌>';
+    if (elToken) {
+      elToken.textContent = currentActiveMCPToken ? currentActiveMCPToken : '点击上方「🔑 签发新 MCP / API 令牌」生成';
+    }
 
     const mcpJson = {
       mcpServers: {
         "agent-gateway": {
           url: fullUrl,
-          headers: { Authorization: 'Bearer <独立签发的操作员令牌>' }
+          headers: { Authorization: `Bearer ${effectiveToken}` }
         }
       }
     };
@@ -1142,9 +1270,10 @@
 1. 豆包桌面版 & 通用代理工具接入（极简推荐）
 将 URL 填入客户端，并单独配置 Authorization: Bearer 请求头：
 ${fullUrl}
+Authorization: Bearer ${effectiveToken}
 
 2. Codex / Cursor / Claude Desktop 接入
-在 mcpServers 配置中添加以下配置（将占位符替换为独立签发的短期凭据）：
+在 mcpServers 配置中添加以下配置：
 ${JSON.stringify(mcpJson, null, 2)}
 
 3. 接入后拥有的大模型集群调度能力
@@ -1155,6 +1284,95 @@ ${JSON.stringify(mcpJson, null, 2)}
     if (elPrompt) elPrompt.textContent = promptText;
   }
 
+  // Token Issuance Modals & Logic
+  const issueTokenModal = document.getElementById('issue-token-modal');
+  const tokenResultModal = document.getElementById('token-result-modal');
+  const btnGenMcpToken = document.getElementById('btn-generate-mcp-token');
+  const btnIssueCred = document.getElementById('btn-issue-credential');
+  const btnIssueSubmit = document.getElementById('issue-token-submit-btn');
+  const elIssueError = document.getElementById('issue-token-error');
+
+  function openIssueTokenModal() {
+    closeAllModals();
+    if (elIssueError) { elIssueError.style.display = 'none'; elIssueError.textContent = ''; }
+    if (issueTokenModal) {
+      issueTokenModal.style.removeProperty('display');
+      issueTokenModal.classList.remove('hidden');
+    }
+  }
+
+  if (btnGenMcpToken) btnGenMcpToken.addEventListener('click', openIssueTokenModal);
+  if (btnIssueCred) btnIssueCred.addEventListener('click', openIssueTokenModal);
+
+  // Global event delegation for modal open buttons to guarantee clicks always trigger
+  document.addEventListener('click', (e) => {
+    const issueBtn = e.target.closest('#btn-generate-mcp-token, #btn-issue-credential');
+    if (issueBtn) {
+      e.preventDefault();
+      openIssueTokenModal();
+    }
+  });
+
+  if (btnIssueSubmit) {
+    btnIssueSubmit.addEventListener('click', async () => {
+      const role = document.getElementById('issue-token-role').value;
+      const ttlHours = parseInt(document.getElementById('issue-token-ttl').value, 10);
+      btnIssueSubmit.disabled = true;
+      btnIssueSubmit.textContent = '正在签发...';
+      if (elIssueError) { elIssueError.style.display = 'none'; elIssueError.textContent = ''; }
+
+      try {
+        const res = await fetch('/v1/operator/credentials', {
+          method: 'POST',
+          headers: authHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ role, ttl_hours: ttlHours })
+        });
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.message || (res.status === 403 ? '权限不足：仅管理员可以签发新令牌。' : '签发失败，请重试'));
+        }
+        const data = await res.json();
+        if (issueTokenModal) {
+          issueTokenModal.classList.add('hidden');
+          issueTokenModal.style.removeProperty('display');
+        }
+
+        // Show Result Modal
+        const token = data.token;
+        const resInput = document.getElementById('token-result-text');
+        if (resInput) resInput.value = token;
+
+        const origin = window.location.origin;
+        const clientCfg = {
+          mcpServers: {
+            "agent-gateway": {
+              url: `${origin}/mcp`,
+              headers: { Authorization: `Bearer ${token}` }
+            }
+          }
+        };
+        const resCfg = document.getElementById('token-result-config');
+        if (resCfg) resCfg.textContent = JSON.stringify(clientCfg, null, 2);
+
+        if (tokenResultModal) {
+          tokenResultModal.style.removeProperty('display');
+          tokenResultModal.classList.remove('hidden');
+        }
+
+        // Update MCP tab view and reload credentials
+        updateMCPDocs(token);
+        loadCredentials();
+      } catch (err) {
+        if (elIssueError) {
+          elIssueError.textContent = err.message;
+          elIssueError.style.display = 'block';
+        }
+      } finally {
+        btnIssueSubmit.disabled = false;
+        btnIssueSubmit.textContent = '立即签发令牌';
+      }
+    });
+  }
 
   let credentialCursor = '';
   async function loadCredentials(append = false) {
@@ -1192,7 +1410,11 @@ ${JSON.stringify(mcpJson, null, 2)}
   }
   document.getElementById('credentials-refresh').addEventListener('click', () => loadCredentials());
   document.getElementById('credentials-more').addEventListener('click', () => loadCredentials(true));
-  document.querySelector('[data-tab="tab-settings"]').addEventListener('click', () => loadCredentials());
+  document.querySelector('[data-tab="tab-settings"]').addEventListener('click', () => {
+    loadCredentials();
+    loadTLSStatus();
+    loadNetworkSettings();
+  });
 
   // Copy functionality
   document.addEventListener('click', (e) => {
@@ -1230,6 +1452,7 @@ ${JSON.stringify(mcpJson, null, 2)}
     fetchNodes();
     updateMCPDocs();
     loadTLSStatus();
+    loadNetworkSettings();
   });
 
   // 5. System Settings & TLS
@@ -1349,6 +1572,76 @@ ${JSON.stringify(mcpJson, null, 2)}
     });
   }
 
+  // 5.1 System Settings: Network & Encryption (HTTP / HTTPS Toggle)
+  async function loadNetworkSettings() {
+    try {
+      const res = await fetch('/api/system/network', { headers: authHeaders(), credentials: 'same-origin' });
+      if (!res.ok) return;
+      const data = await res.json();
+      const toggleSwitch = document.getElementById('toggle-http-switch');
+      const modeBadge = document.getElementById('network-mode-badge');
+      if (toggleSwitch) toggleSwitch.checked = !!data.enable_http;
+      if (modeBadge) {
+        if (data.enable_http) {
+          modeBadge.textContent = 'HTTP / HTTPS 双协议自适应（同端口）';
+          modeBadge.style.background = 'rgba(234, 179, 8, 0.2)';
+          modeBadge.style.color = '#facc15';
+        } else {
+          modeBadge.textContent = 'HTTPS 纯加密模式';
+          modeBadge.style.background = 'rgba(56, 189, 248, 0.2)';
+          modeBadge.style.color = 'var(--primary)';
+        }
+      }
+    } catch (e) {
+      console.error('Failed to load network settings:', e);
+    }
+  }
+
+  async function saveNetworkSettings() {
+    const toggleSwitch = document.getElementById('toggle-http-switch');
+    const msgEl = document.getElementById('network-setting-msg');
+    if (!toggleSwitch || !msgEl) return;
+    const enableHttp = toggleSwitch.checked;
+
+    msgEl.className = 'alert';
+    msgEl.textContent = '正在更新运行模式...';
+    msgEl.classList.remove('hidden');
+
+    try {
+      const res = await fetch('/api/system/network', {
+        method: 'POST',
+        headers: authHeaders(),
+        credentials: 'same-origin',
+        body: JSON.stringify({ enable_http: enableHttp })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        msgEl.className = 'alert alert-success';
+        if (enableHttp) {
+          msgEl.textContent = '已开启未加密 (HTTP) 服务！同端口已支持直接使用 http:// 访问 MCP 与管理控制台。';
+        } else {
+          msgEl.textContent = '已切换为纯安全模式，仅接受 HTTPS 安全加密连接。';
+        }
+        loadNetworkSettings();
+      } else {
+        msgEl.className = 'alert alert-danger';
+        msgEl.textContent = '保存失败: ' + (data.message || res.statusText);
+      }
+    } catch (err) {
+      msgEl.className = 'alert alert-danger';
+      msgEl.textContent = '网络错误: ' + err.message;
+    }
+  }
+
+  const saveNetworkBtn = document.getElementById('save-network-btn');
+  if (saveNetworkBtn) {
+    saveNetworkBtn.addEventListener('click', saveNetworkSettings);
+  }
+  const toggleHttpSwitch = document.getElementById('toggle-http-switch');
+  if (toggleHttpSwitch) {
+    toggleHttpSwitch.addEventListener('change', saveNetworkSettings);
+  }
+
   // Update quick install command and pairing token management
   async function generatePairInvitation(maxUses = 1) {
     const quickInstallEl = document.getElementById('node-quick-install-cmd');
@@ -1368,20 +1661,12 @@ ${JSON.stringify(mcpJson, null, 2)}
       });
       if (res.ok) {
         const data = await res.json();
-        const origin = window.location.origin;
-        const httpsNote = (data.gateway_url || origin).indexOf('http://') === 0
-          ? '\n注意：当前控制台走明文端口，请把命令里的 http 换成网关的 https 地址（默认 8443 端口）。'
-          : '';
         if (quickInstallEl) {
-          quickInstallEl.textContent =
-            `把下面全部命令复制到目标机器执行（无需手动下载 CA）：\n` +
-            (data.install_cmd_bash || '') + httpsNote;
+          quickInstallEl.textContent = data.install_cmd_bash || '';
         }
         const quickInstallPs1 = document.getElementById('node-quick-install-cmd-ps1');
         if (quickInstallPs1) {
-          quickInstallPs1.textContent =
-            `把下面全部命令复制到目标机器的 PowerShell 执行（无需手动下载 CA）：\n` +
-            (data.install_cmd_ps1 || '') + httpsNote;
+          quickInstallPs1.textContent = data.install_cmd_ps1 || '';
         }
         if (badgeEl) {
           const expTime = new Date(data.expires_at).toLocaleTimeString();
@@ -1463,6 +1748,7 @@ ${JSON.stringify(mcpJson, null, 2)}
         await fetchTasks();
         connectSSE();
         loadTLSStatus();
+        loadNetworkSettings();
         updateQuickInstall();
         return;
       }

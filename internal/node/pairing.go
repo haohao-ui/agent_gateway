@@ -93,7 +93,12 @@ func Pair(ctx context.Context, cfg PairConfig) (PairState, error) {
 	}
 	client := newTLSClient(tlsConfig, timeout)
 
-	body, err := json.Marshal(protocol.PairRequest{InvitationToken: cfg.InvitationToken, CSRPEM: string(csrPEM)})
+	body, err := json.Marshal(protocol.PairRequest{
+		InvitationToken: cfg.InvitationToken,
+		CSRPEM:          string(csrPEM),
+		MachineID:       protocol.GetMachineID(),
+		Hostname:        protocol.GetDeviceName(),
+	})
 	if err != nil {
 		return PairState{}, fmt.Errorf("encode pair request: %w", err)
 	}

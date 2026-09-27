@@ -125,3 +125,45 @@ func TestUpgradeRejectsHTTPForeignOriginAndMissingKey(t *testing.T) {
 		}
 	}
 }
+
+func TestDirectGatewayUpgradeWithQueryParam(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("running executable replacement test requires unix semantics")
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawExe, err := os.ReadFile(exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/download/mesh" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(rawExe)
+	}))
+	defer ts.Close()
+
+	dir := t.TempDir()
+	cert := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ts.Certificate().Raw})
+	if err := os.WriteFile(filepath.Join(dir, "ca.crt"), cert, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	n := &Node{dir: dir, cfg: Config{ServerURL: ts.URL, CAFile: filepath.Join(dir, "ca.crt")}}
+	downloadURL := ts.URL + "/download/mesh?arch=" + runtime.GOOS + "-" + runtime.GOARCH
+
+	msg, err := n.performSelfUpgrade(context.Background(), downloadURL)
+	if err != nil {
+		t.Fatalf("expected direct upgrade to succeed, got: %v", err)
+	}
+	if !strings.Contains(msg, "Successfully upgraded") {
+		t.Errorf("unexpected success message: %s", msg)
+	}
+}

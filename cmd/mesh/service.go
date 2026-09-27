@@ -30,7 +30,7 @@ Install flags:
   --log-dir <path>        directory for service stdout/stderr logs
   --addr <address>        listen address (server role, default: 127.0.0.1:8443)
   --data-dir <path>       gateway data directory (server role)
-  --config <path>         node config path (node role, default: ./node/node.json)
+  --config <path>         node config path (node role, default: ~/.agent-mesh-node/node.json)
   --node-dir <path>       node journal directory (node role)
   --args <args>           additional command-line arguments to pass
 

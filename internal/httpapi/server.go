@@ -96,6 +96,9 @@ type Server struct {
 
 	waitersMu sync.Mutex
 	waiters   map[string][]chan struct{} // nodeID -> slice of wakeup channels
+
+	httpAllowedMu sync.RWMutex
+	httpAllowed   bool
 }
 
 // NodeRuntimeInfo tracks real-time heartbeat, software version and detected agent capabilities.
@@ -105,6 +108,7 @@ type NodeRuntimeInfo struct {
 	OS        string                   `json:"os"`
 	Arch      string                   `json:"arch"`
 	Hostname  string                   `json:"hostname,omitempty"`
+	MachineID string                   `json:"machine_id,omitempty"`
 	Status    string                   `json:"status,omitempty"`
 	Agents    []protocol.AgentSoftware `json:"agents"`
 	LastSeen  time.Time                `json:"last_seen"`
@@ -139,12 +143,26 @@ func (s *Server) SetAdminCredentials(password, token string) {
 
 // SetAllowPlainHTTP is retained for source compatibility. Management always requires TLS.
 func (s *Server) SetAllowPlainHTTP(allow bool) {
-	// Deliberately ignored: a listener flag must not relax authentication transport.
+	// Deliberately ignored: legacy flag must not relax transport security on its own.
+}
+
+func (s *Server) SetHTTPAllowed(allow bool) {
+	s.httpAllowedMu.Lock()
+	s.httpAllowed = allow
+	s.httpAllowedMu.Unlock()
+}
+
+func (s *Server) IsHTTPAllowed() bool {
+	s.httpAllowedMu.RLock()
+	defer s.httpAllowedMu.RUnlock()
+	return s.httpAllowed
 }
 
 // SetDataDir sets the gateway data directory path for diagnostics and reporting.
 func (s *Server) SetDataDir(dir string) {
 	s.dataDir = dir
+	cfg := s.LoadNetworkConfig()
+	s.SetHTTPAllowed(cfg.EnableHTTP)
 }
 
 // SetDoctorFunc configures the diagnostics runner for web queries.
@@ -188,14 +206,18 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /download/ca.crt", s.handleDownloadCA)
 	s.mux.HandleFunc("GET /download/install.sh", s.handleDownloadInstallScript)
 	s.mux.HandleFunc("GET /download/install.ps1", s.handleDownloadInstallPowerShell)
+	s.mux.HandleFunc("GET /install.sh", s.handleDownloadInstallScript)
+	s.mux.HandleFunc("GET /install.ps1", s.handleDownloadInstallPowerShell)
 	s.mux.HandleFunc("GET /skills/agent-mesh/SKILL.md", s.handleDownloadSkill)
 	s.mux.HandleFunc("GET /download/skills/agent-mesh/SKILL.md", s.handleDownloadSkill)
 	s.mux.HandleFunc("GET /download/SKILL.md", s.handleDownloadSkill)
 
-	// System Management (TLS configuration and restart)
+	// System Management (TLS configuration, network mode and restart)
 	s.mux.HandleFunc("GET /api/system/tls", s.handleGetTLSStatus)
 	s.mux.HandleFunc("POST /api/system/tls/upload", s.handleUploadTLS)
 	s.mux.HandleFunc("POST /api/system/tls/reset", s.handleResetTLS)
+	s.mux.HandleFunc("GET /api/system/network", s.handleGetNetworkSettings)
+	s.mux.HandleFunc("POST /api/system/network", s.handleUpdateNetworkSettings)
 	s.mux.HandleFunc("POST /api/system/restart", s.handleSystemRestart)
 	s.mux.HandleFunc("POST /api/operator/invitations", s.handleCreateInvitation)
 
@@ -232,7 +254,7 @@ func (s *Server) handleProbe(w http.ResponseWriter, r *http.Request) {
 const webSessionTTL = 8 * time.Hour
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
-	if r.TLS == nil {
+	if r.TLS == nil && !s.IsHTTPAllowed() {
 		writeError(w, 403, "tls_required", "login requires HTTPS")
 		return
 	}
@@ -261,13 +283,13 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 503, "unavailable", "could not create session")
 		return
 	}
-	http.SetCookie(w, &http.Cookie{Name: "gateway_token", Value: token, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: true, MaxAge: int(webSessionTTL.Seconds())})
+	http.SetCookie(w, &http.Cookie{Name: "gateway_token", Value: token, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: r.TLS != nil, MaxAge: int(webSessionTTL.Seconds())})
 	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, 200, map[string]any{"status": "ok", "username": "admin", "principal_id": p.ID, "version": protocol.FullVersion()})
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
-	if r.TLS == nil {
+	if r.TLS == nil && !s.IsHTTPAllowed() {
 		writeError(w, 403, "tls_required", "logout requires HTTPS")
 		return
 	}
@@ -280,17 +302,21 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 			s.closeStreams(p.ID)
 		}
 	}
-	http.SetCookie(w, &http.Cookie{Name: "gateway_token", Value: "", Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: true, MaxAge: -1})
+	http.SetCookie(w, &http.Cookie{Name: "gateway_token", Value: "", Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: r.TLS != nil, MaxAge: -1})
 	writeJSON(w, 200, map[string]string{"status": "ok"})
 }
 
 func (s *Server) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.policies != nil && r.TLS == nil {
+		if s.policies != nil && r.TLS == nil && !s.IsHTTPAllowed() {
 			writeError(w, 426, "tls_required", "use the HTTPS listener")
 			return
 		}
 		if r.URL.Query().Has("token") {
+			if isInstallScriptPath(r.URL.Path) {
+				s.mux.ServeHTTP(w, r)
+				return
+			}
 			// Console pages used to accept ?token= URLs, so old bookmarks still
 			// carry one. Drop the parameter and keep the page reachable instead
 			// of failing the navigation with a JSON error.
@@ -304,7 +330,11 @@ func (s *Server) Handler() http.Handler {
 		if r.Method != "GET" && r.Method != "HEAD" && r.Method != "OPTIONS" {
 			if origin := r.Header.Get("Origin"); origin != "" {
 				u, err := url.Parse(origin)
-				if err != nil || u.Scheme != "https" || u.Host != r.Host {
+				expectedScheme := "https"
+				if s.IsHTTPAllowed() && r.TLS == nil {
+					expectedScheme = "http"
+				}
+				if err != nil || (u.Scheme != "https" && u.Scheme != expectedScheme) || !strings.EqualFold(u.Host, r.Host) {
 					writeError(w, 403, "origin_forbidden", "cross-origin mutation denied")
 					return
 				}
@@ -312,6 +342,11 @@ func (s *Server) Handler() http.Handler {
 		}
 		s.mux.ServeHTTP(w, r)
 	})
+}
+
+func isInstallScriptPath(path string) bool {
+	return path == "/install.sh" || path == "/install.ps1" ||
+		path == "/download/install.sh" || path == "/download/install.ps1"
 }
 
 // consolePath reports the console navigation target for a legacy ?token= URL:
@@ -451,7 +486,7 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if s.devices != nil {
-		if err := s.registerCertificate(r.Context(), nodeID, certPEM); err != nil {
+		if err := s.registerCertificateWithDevice(r.Context(), nodeID, certPEM, req.MachineID, req.Hostname); err != nil {
 			writeError(w, 500, "internal_error", "device registration failed; request a new invitation")
 			return
 		}
@@ -571,6 +606,7 @@ func (s *Server) handleClaim(w http.ResponseWriter, r *http.Request) {
 		OS:        osName,
 		Arch:      arch,
 		Hostname:  hostname,
+		MachineID: req.MachineID,
 		Status:    "online",
 		Agents:    req.Agents,
 		LastSeen:  time.Now().UTC(),

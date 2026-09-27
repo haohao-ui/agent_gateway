@@ -33,7 +33,9 @@ type PairInvitation struct {
 type PairRequest struct {
 	InvitationToken string `json:"invitation_token"`
 	// CSRPEM is the Certificate Signing Request generated locally by the node.
-	CSRPEM string `json:"csr_pem"`
+	CSRPEM    string `json:"csr_pem"`
+	MachineID string `json:"machine_id,omitempty"`
+	Hostname  string `json:"hostname,omitempty"`
 }
 
 // PairResponse returns the signed node certificate and CA certificate.
@@ -60,6 +62,7 @@ type ClaimRequest struct {
 	OS                   string          `json:"os,omitempty"`
 	Arch                 string          `json:"arch,omitempty"`
 	Hostname             string          `json:"hostname,omitempty"`
+	MachineID            string          `json:"machine_id,omitempty"`
 	Agents               []AgentSoftware `json:"agents,omitempty"`
 	StartedAt            int64           `json:"started_at,omitempty"`
 }

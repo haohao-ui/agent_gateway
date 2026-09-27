@@ -23,7 +23,7 @@ func runPair(ctx context.Context, args []string) error {
 	server := cmd.flags.String("server", envOrDefault([]string{"MESH_SERVER_URL", "MESH_SERVER"}, ""), "gateway base URL, for example https://127.0.0.1:8443")
 	token := cmd.flags.String("token", envOrDefault([]string{"MESH_PAIR_TOKEN", "MESH_INVITATION_TOKEN", "MESH_TOKEN"}, ""), "one-time invitation token printed by 'mesh server' or 'mesh invite'; use - to read it from stdin")
 	caFile := cmd.flags.String("ca", envOrDefault([]string{"MESH_CA_FILE", "MESH_CA"}, ""), "path to the gateway CA certificate to trust")
-	dir := cmd.flags.String("dir", envString("MESH_NODE_DIR", "./node"), "directory that will hold this machine's identity")
+	dir := cmd.flags.String("dir", envString("MESH_NODE_DIR", defaultNodeDir()), "directory that will hold this machine's identity (default: ~/.agent-mesh-node)")
 	writeConfig := cmd.flags.Bool("write-config", true, "write a starter node.json if the directory has none")
 	if err := cmd.flags.Parse(args); err != nil {
 		return err

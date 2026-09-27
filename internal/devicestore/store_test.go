@@ -753,3 +753,47 @@ func TestDelete_Device(t *testing.T) {
 		t.Fatalf("expected 0 devices after delete, got %d", len(list))
 	}
 }
+
+func TestAllowedTools_GetSet(t *testing.T) {
+	p := newTempDB(t)
+	s := openTestStore(t, p)
+	ctx := context.Background()
+
+	nodeID := "node-tool-test"
+	exp := time.Now().UTC().Add(time.Hour)
+	if err := s.Register(ctx, nodeID, testValidFingerprint, exp); err != nil {
+		t.Fatalf("Register failed: %v", err)
+	}
+
+	// Initially empty
+	tools, err := s.GetAllowedTools(ctx, nodeID)
+	if err != nil {
+		t.Fatalf("GetAllowedTools failed: %v", err)
+	}
+	if len(tools) != 0 {
+		t.Fatalf("expected 0 allowed tools initially, got %v", tools)
+	}
+
+	// Set tools
+	want := []string{"bash", "python3", "docker"}
+	if err := s.SetAllowedTools(ctx, nodeID, want); err != nil {
+		t.Fatalf("SetAllowedTools failed: %v", err)
+	}
+
+	got, err := s.GetAllowedTools(ctx, nodeID)
+	if err != nil {
+		t.Fatalf("GetAllowedTools after set failed: %v", err)
+	}
+	if len(got) != 3 || got[0] != "bash" || got[1] != "python3" || got[2] != "docker" {
+		t.Fatalf("unexpected got: %v, want: %v", got, want)
+	}
+
+	// Verify List also reflects AllowedTools
+	devices, err := s.List(ctx)
+	if err != nil {
+		t.Fatalf("List failed: %v", err)
+	}
+	if len(devices) != 1 || len(devices[0].AllowedTools) != 3 {
+		t.Fatalf("List did not return allowed tools: %+v", devices)
+	}
+}

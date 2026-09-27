@@ -16,7 +16,7 @@ type DoctorFunc func(ctx context.Context) any
 
 // handleSSEStreams handles browser and client real-time event subscriptions over Server-Sent Events.
 func (s *Server) handleSSEStreams(w http.ResponseWriter, r *http.Request) {
-	if r.TLS == nil || s.policies == nil {
+	if (r.TLS == nil && !s.IsHTTPAllowed()) || s.policies == nil {
 		writeError(w, 401, "unauthorized", "HTTPS operator authentication required")
 		return
 	}
@@ -49,8 +49,13 @@ func (s *Server) handleSSEStreams(w http.ResponseWriter, r *http.Request) {
 	// 2. Set SSE Headers
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache, no-transform")
-	w.Header().Set("Connection", "keep-alive")
+	// HTTP/2 strictly forbids connection-specific hop-by-hop headers like "Connection" (RFC 7540 section 8.1.2.2).
+	if r.ProtoMajor < 2 {
+		w.Header().Set("Connection", "keep-alive")
+	}
 	w.Header().Set("X-Accel-Buffering", "no")
+	// Clear any write deadline for SSE stream so long-running connection is not terminated
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Time{})
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 

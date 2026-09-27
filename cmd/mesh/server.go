@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -60,6 +61,81 @@ type gatewayInfo struct {
 	OperatorToken   string
 	AdminUsername   string
 	AdminPassword   string
+}
+
+// peekConn wraps net.Conn with a prepended peek buffer.
+type peekConn struct {
+	net.Conn
+	peek []byte
+}
+
+func (c *peekConn) Read(b []byte) (int, error) {
+	if len(c.peek) > 0 {
+		n := copy(b, c.peek)
+		c.peek = c.peek[n:]
+		return n, nil
+	}
+	return c.Conn.Read(b)
+}
+
+// chanListener implements net.Listener backed by a channel of net.Conn.
+type chanListener struct {
+	addr      net.Addr
+	connChan  chan net.Conn
+	closeOnce sync.Once
+	closed    chan struct{}
+}
+
+func newChanListener(addr net.Addr) *chanListener {
+	return &chanListener{
+		addr:     addr,
+		connChan: make(chan net.Conn, 128),
+		closed:   make(chan struct{}),
+	}
+}
+
+func (l *chanListener) Accept() (net.Conn, error) {
+	select {
+	case c, ok := <-l.connChan:
+		if !ok {
+			return nil, net.ErrClosed
+		}
+		return c, nil
+	case <-l.closed:
+		return nil, net.ErrClosed
+	}
+}
+
+func (l *chanListener) Close() error {
+	l.closeOnce.Do(func() {
+		close(l.closed)
+	})
+	return nil
+}
+
+func (l *chanListener) Addr() net.Addr {
+	return l.addr
+}
+
+func (l *chanListener) AcceptConn(c net.Conn) bool {
+	select {
+	case l.connChan <- c:
+		return true
+	case <-l.closed:
+		c.Close()
+		return false
+	default:
+		go func() {
+			select {
+			case l.connChan <- c:
+			case <-l.closed:
+				c.Close()
+			case <-time.After(5 * time.Second):
+				c.Close()
+			}
+		}()
+		return true
+	}
 }
 
 // serveGateway runs the gateway until ctx is cancelled, then shuts it down
@@ -147,39 +223,82 @@ func serveGateway(ctx context.Context, opts gatewayOptions, onReady func(gateway
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", opts.Addr, err)
 	}
-
 	defer listener.Close()
-	var (
-		httpListener net.Listener
-		httpServer   *http.Server
-	)
-	if opts.HTTPAddr != "" {
-		// HTTP is an informational rejection listener; it never permits credentials.
-		var err error
-		httpListener, err = net.Listen("tcp", opts.HTTPAddr)
-		if err != nil {
-			_ = listener.Close()
-			return fmt.Errorf("listen http on %s: %w", opts.HTTPAddr, err)
+
+	tlsListener := newChanListener(listener.Addr())
+	defer tlsListener.Close()
+	plainListener := newChanListener(listener.Addr())
+	defer plainListener.Close()
+
+	// 协议探测协程：对同一个端口自动探测 TLS 与普通 HTTP，实现同端口多协议自适应复用
+	go func() {
+		for {
+			c, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func(conn net.Conn) {
+				var firstByte [1]byte
+				_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+				n, err := io.ReadFull(conn, firstByte[:])
+				_ = conn.SetReadDeadline(time.Time{})
+				if err != nil {
+					conn.Close()
+					return
+				}
+				pConn := &peekConn{
+					Conn: conn,
+					peek: firstByte[:n],
+				}
+				// TLS 记录握手报文首字节永远是 0x16 (22)
+				if firstByte[0] == 0x16 {
+					tlsListener.AcceptConn(pConn)
+				} else {
+					// 客户端发送的是普通 HTTP 请求（GET/POST/OPTIONS 等）
+					if api.IsHTTPAllowed() {
+						plainListener.AcceptConn(pConn)
+					} else {
+						// 未开启未加密模式时，依然交给 TLS 监听器做标准 TLS 拒绝处理
+						tlsListener.AcceptConn(pConn)
+					}
+				}
+			}(c)
 		}
-		defer httpListener.Close()
-		httpServer = &http.Server{
-			Handler:           api.Handler(),
-			BaseContext:       func(net.Listener) context.Context { return ctx },
-			ReadHeaderTimeout: serverReadTimeout,
-			IdleTimeout:       serverIdleTimeout,
-		}
-	}
+	}()
 
 	server := &http.Server{
-		Handler:     api.Handler(),
-		BaseContext: func(net.Listener) context.Context { return ctx },
-		TLSConfig:   tlsConfig,
-		// ReadHeaderTimeout bounds a slow client's header phase; IdleTimeout
-		// reclaims dead connections. There is deliberately no WriteTimeout: a
-		// claim long poll is supposed to hold the response open, and it ends on
-		// its own timer.
+		Handler:           api.Handler(),
+		BaseContext:       func(net.Listener) context.Context { return ctx },
+		TLSConfig:         tlsConfig,
 		ReadHeaderTimeout: serverReadTimeout,
 		IdleTimeout:       serverIdleTimeout,
+	}
+
+	plainServer := &http.Server{
+		Handler:           api.Handler(),
+		BaseContext:       func(net.Listener) context.Context { return ctx },
+		ReadHeaderTimeout: serverReadTimeout,
+		IdleTimeout:       serverIdleTimeout,
+	}
+
+	var (
+		extraHTTPListener net.Listener
+		extraHTTPServer   *http.Server
+	)
+	if opts.HTTPAddr != "" {
+		var err error
+		extraHTTPListener, err = net.Listen("tcp", opts.HTTPAddr)
+		if err != nil {
+			opts.Log.Warn("listen extra http failed", "addr", opts.HTTPAddr, "error", err)
+		} else {
+			defer extraHTTPListener.Close()
+			extraHTTPServer = &http.Server{
+				Handler:           api.Handler(),
+				BaseContext:       func(net.Listener) context.Context { return ctx },
+				ReadHeaderTimeout: serverReadTimeout,
+				IdleTimeout:       serverIdleTimeout,
+			}
+		}
 	}
 
 	if err := policies.LimitLifetime(ctx, 24*time.Hour); err != nil {
@@ -202,8 +321,10 @@ func serveGateway(ctx context.Context, opts gatewayOptions, onReady func(gateway
 		AdminUsername:   "admin",
 		AdminPassword:   adminPass,
 	}
-	if httpListener != nil {
-		info.HTTPAddr = "http://" + httpListener.Addr().String()
+	if api.IsHTTPAllowed() {
+		info.HTTPAddr = "http://" + listener.Addr().String()
+	} else if extraHTTPListener != nil {
+		info.HTTPAddr = "http://" + extraHTTPListener.Addr().String()
 	}
 	for i := 0; i < opts.Invitations; i++ {
 		invitation, err := ca.GenerateInvitation(opts.InviteTTL)
@@ -239,9 +360,6 @@ func serveGateway(ctx context.Context, opts gatewayOptions, onReady func(gateway
 		}
 	}
 
-	// The store has no background goroutine of its own: whoever owns the
-	// process drives lease expiry, which is what turns a stalled attempt into
-	// unknown instead of leaving it leased forever.
 	sweepCtx, stopSweep := context.WithCancel(ctx)
 	defer stopSweep()
 	var sweepDone sync.WaitGroup
@@ -251,21 +369,27 @@ func serveGateway(ctx context.Context, opts gatewayOptions, onReady func(gateway
 		sweepLeases(sweepCtx, store, opts.ExpireEvery, opts.Log)
 	}()
 
-	serveErr := make(chan error, 2)
+	serveErr := make(chan error, 3)
 	go func() {
-		// ServeTLS with empty file names uses the certificates already in the
-		// TLS configuration.
-		err := server.ServeTLS(listener, "", "")
-		if errors.Is(err, http.ErrServerClosed) {
+		err := server.ServeTLS(tlsListener, "", "")
+		if errors.Is(err, http.ErrServerClosed) || errors.Is(err, net.ErrClosed) {
 			err = nil
 		}
 		serveErr <- err
 	}()
 
-	if httpServer != nil {
+	go func() {
+		err := plainServer.Serve(plainListener)
+		if errors.Is(err, http.ErrServerClosed) || errors.Is(err, net.ErrClosed) {
+			err = nil
+		}
+		serveErr <- err
+	}()
+
+	if extraHTTPServer != nil {
 		go func() {
-			err := httpServer.Serve(httpListener)
-			if errors.Is(err, http.ErrServerClosed) {
+			err := extraHTTPServer.Serve(extraHTTPListener)
+			if errors.Is(err, http.ErrServerClosed) || errors.Is(err, net.ErrClosed) {
 				err = nil
 			}
 			serveErr <- err
@@ -286,11 +410,10 @@ func serveGateway(ctx context.Context, opts gatewayOptions, onReady func(gateway
 	opts.Log.Info("shutting down")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), serverShutdownWindow)
 	defer cancel()
-	if err := server.Shutdown(shutdownCtx); err != nil {
-		return fmt.Errorf("shut down the server: %w", err)
-	}
-	if httpServer != nil {
-		_ = httpServer.Shutdown(shutdownCtx)
+	_ = server.Shutdown(shutdownCtx)
+	_ = plainServer.Shutdown(shutdownCtx)
+	if extraHTTPServer != nil {
+		_ = extraHTTPServer.Shutdown(shutdownCtx)
 	}
 	stopSweep()
 	sweepDone.Wait()

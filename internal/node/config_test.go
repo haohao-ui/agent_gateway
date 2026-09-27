@@ -161,3 +161,33 @@ func TestResolvePaths(t *testing.T) {
 		t.Fatalf("an absolute path was rewritten: %q", cfg.CAFile)
 	}
 }
+
+func TestDynamicCapabilityFor_DiscoveredTools(t *testing.T) {
+	cfg := Config{}
+
+	// Test that bash (or sh) resolves dynamically even when not in static capabilities
+	cap, err := cfg.capabilityFor(protocol.Task{
+		Capability:        "bash",
+		CapabilityVersion: 1,
+	})
+	if err != nil {
+		t.Fatalf("expected dynamic capability for bash, got err: %v", err)
+	}
+	if cap.Name != "bash" || cap.Adapter.Executable == "" {
+		t.Fatalf("invalid dynamic capability: %+v", cap)
+	}
+
+	// Test python3 resolves if installed
+	if _, err := os.Stat("/usr/bin/python3"); err == nil {
+		pcap, err := cfg.capabilityFor(protocol.Task{
+			Capability:        "python3",
+			CapabilityVersion: 1,
+		})
+		if err != nil {
+			t.Fatalf("expected dynamic capability for python3: %v", err)
+		}
+		if pcap.Name != "python3" {
+			t.Fatalf("expected python3, got %s", pcap.Name)
+		}
+	}
+}

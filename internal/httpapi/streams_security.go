@@ -92,7 +92,6 @@ func (w *authenticatedStreamWriter) Write(b []byte) (int, error) {
 	if _, err := w.server.policies.Authenticate(w.ctx, w.token); err != nil {
 		return 0, err
 	}
-	_ = http.NewResponseController(w.ResponseWriter).SetWriteDeadline(time.Now().Add(5 * time.Second))
 	return w.ResponseWriter.Write(b)
 }
 func (w *authenticatedStreamWriter) Flush() { _ = http.NewResponseController(w.ResponseWriter).Flush() }

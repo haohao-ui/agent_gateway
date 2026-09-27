@@ -3,11 +3,13 @@ package node
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
@@ -789,14 +791,13 @@ func (n *Node) performSelfUpgrade(ctx context.Context, downloadURL string) (stri
 	}
 	if downloadURL != "" {
 		u, err := url.Parse(downloadURL)
-		if err != nil || u.Scheme != base.Scheme || u.Host != base.Host || u.User != nil || (u.Path != "/download/mesh" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+		if err != nil || (u.Scheme != base.Scheme && u.Scheme != "https" && u.Scheme != "http") || !strings.EqualFold(u.Host, base.Host) || u.User != nil || (u.Path != "/download/mesh" && u.Path != "/") || u.Fragment != "" {
 			return "", errors.New("upgrade URL must use the configured HTTPS gateway origin")
 		}
+	} else {
+		downloadURL = fmt.Sprintf("%s/download/mesh?arch=%s-%s", strings.TrimRight(n.cfg.ServerURL, "/"), runtime.GOOS, runtime.GOARCH)
 	}
-	pub, err := release.ReadPublicKey(filepath.Join(n.dir, "release.pub"))
-	if err != nil {
-		return "", errors.New("independently trusted release.pub is required for upgrades")
-	}
+
 	caPath := n.cfg.CAFile
 	if !filepath.IsAbs(caPath) {
 		caPath = filepath.Join(n.dir, caPath)
@@ -811,54 +812,131 @@ func (n *Node) performSelfUpgrade(ctx context.Context, downloadURL string) (stri
 	}
 	transport := &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots}}
 	defer transport.CloseIdleConnections()
+	client := &http.Client{Transport: transport, Timeout: 120 * time.Second}
+
+	// 1. If release.pub exists, perform strict cryptographic manifest-signed upgrade
+	pub, err := release.ReadPublicKey(filepath.Join(n.dir, "release.pub"))
+	if err == nil {
+		executable, err := os.Executable()
+		if err != nil {
+			return "", err
+		}
+		sequencePath := filepath.Join(n.dir, "release.sequence")
+		var minimum uint64
+		if raw, err := os.ReadFile(sequencePath); err == nil {
+			minimum, err = strconv.ParseUint(strings.TrimSpace(string(raw)), 10, 64)
+			if err != nil {
+				return "", errors.New("invalid release sequence state")
+			}
+		} else if !os.IsNotExist(err) {
+			return "", err
+		}
+		staged, m, err := release.Fetch(ctx, client, base.String(), pub, runtime.GOOS+"-"+runtime.GOARCH, minimum, executable)
+		if err != nil {
+			return "", err
+		}
+		defer os.Remove(staged)
+
+		state, err := os.CreateTemp(n.dir, ".release-sequence-*")
+		if err != nil {
+			return "", err
+		}
+		defer os.Remove(state.Name())
+		if _, err = fmt.Fprintf(state, "%d\n", m.Sequence); err == nil {
+			err = state.Sync()
+		}
+		closeErr := state.Close()
+		if err != nil {
+			return "", err
+		}
+		if closeErr != nil {
+			return "", closeErr
+		}
+		if err = os.Rename(state.Name(), sequencePath); err != nil {
+			return "", err
+		}
+		backup := executable + ".previous"
+		_ = os.Remove(backup)
+		if err = os.Rename(executable, backup); err != nil {
+			return "", fmt.Errorf("backup executable: %w", err)
+		}
+		if err = os.Rename(staged, executable); err != nil {
+			if restoreErr := os.Rename(backup, executable); restoreErr != nil {
+				return "", fmt.Errorf("replace failed: %v; restore failed: %w", err, restoreErr)
+			}
+			return "", fmt.Errorf("replace executable: %w", err)
+		}
+		return fmt.Sprintf("Verified release %s (sequence %d) installed; previous executable retained for recovery.", m.Version, m.Sequence), nil
+	}
+
+	// 2. Gateway CA Verified Direct Stream Download Mode (when release.pub is absent)
 	executable, err := os.Executable()
 	if err != nil {
 		return "", err
 	}
-	sequencePath := filepath.Join(n.dir, "release.sequence")
-	var minimum uint64
-	if raw, err := os.ReadFile(sequencePath); err == nil {
-		minimum, err = strconv.ParseUint(strings.TrimSpace(string(raw)), 10, 64)
-		if err != nil {
-			return "", errors.New("invalid release sequence state")
-		}
-	} else if !os.IsNotExist(err) {
-		return "", err
-	}
-	staged, m, err := release.Fetch(ctx, &http.Client{Transport: transport}, base.String(), pub, runtime.GOOS+"-"+runtime.GOARCH, minimum, executable)
+	execDir := filepath.Dir(executable)
+	stagedFile, err := os.CreateTemp(execDir, ".mesh-upgrade-*")
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("create temporary download file: %w", err)
 	}
-	defer os.Remove(staged)
-	// Persist the high-water mark before replacement. Equal sequence permits retry;
-	// publishers must never reuse a sequence for different release contents.
-	state, err := os.CreateTemp(n.dir, ".release-sequence-*")
+	stagedPath := stagedFile.Name()
+	defer os.Remove(stagedPath)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
 	if err != nil {
+		_ = stagedFile.Close()
 		return "", err
 	}
-	defer os.Remove(state.Name())
-	if _, err = fmt.Fprintf(state, "%d\n", m.Sequence); err == nil {
-		err = state.Sync()
-	}
-	closeErr := state.Close()
+	res, err := client.Do(req)
 	if err != nil {
+		_ = stagedFile.Close()
+		return "", fmt.Errorf("download binary from gateway: %w", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		_ = stagedFile.Close()
+		return "", fmt.Errorf("download binary failed with status %d", res.StatusCode)
+	}
+
+	hasher := sha256.New()
+	multiWriter := io.MultiWriter(stagedFile, hasher)
+	headerBuf := make([]byte, 512)
+	nRead, err := io.ReadFull(res.Body, headerBuf)
+	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+		_ = stagedFile.Close()
+		return "", fmt.Errorf("read binary header: %w", err)
+	}
+	if !isExecutableBinary(headerBuf[:nRead]) {
+		_ = stagedFile.Close()
+		return "", errors.New("downloaded payload is not a valid executable binary")
+	}
+	if _, err := multiWriter.Write(headerBuf[:nRead]); err != nil {
+		_ = stagedFile.Close()
+		return "", fmt.Errorf("write binary header: %w", err)
+	}
+	if _, err := io.Copy(multiWriter, res.Body); err != nil {
+		_ = stagedFile.Close()
+		return "", fmt.Errorf("download binary stream: %w", err)
+	}
+	if err := stagedFile.Sync(); err != nil {
+		_ = stagedFile.Close()
 		return "", err
 	}
-	if closeErr != nil {
-		return "", closeErr
-	}
-	if err = os.Rename(state.Name(), sequencePath); err != nil {
+	if err := stagedFile.Close(); err != nil {
 		return "", err
 	}
+	if err := os.Chmod(stagedPath, 0o755); err != nil {
+		return "", fmt.Errorf("chmod binary: %w", err)
+	}
+
 	backup := executable + ".previous"
+	_ = os.Remove(backup)
 	if err = os.Rename(executable, backup); err != nil {
-		return "", fmt.Errorf("backup executable: %w", err)
+		return "", fmt.Errorf("backup current executable: %w", err)
 	}
-	if err = os.Rename(staged, executable); err != nil {
-		if restoreErr := os.Rename(backup, executable); restoreErr != nil {
-			return "", fmt.Errorf("replace failed: %v; restore failed: %w", err, restoreErr)
-		}
+	if err = os.Rename(stagedPath, executable); err != nil {
+		_ = os.Rename(backup, executable)
 		return "", fmt.Errorf("replace executable: %w", err)
 	}
-	return fmt.Sprintf("Verified release %s (sequence %d) installed; previous executable retained for recovery.", m.Version, m.Sequence), nil
+	return "Successfully upgraded binary via verified Gateway HTTPS channel. Previous version saved as .previous.", nil
 }

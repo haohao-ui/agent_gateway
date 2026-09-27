@@ -45,7 +45,7 @@
       </div>
       <div class="header-actions">
         <span id="gateway-version-badge" class="badge" style="background:rgba(56,189,248,0.12);color:#38bdf8;border:1px solid rgba(56,189,248,0.3);padding:4px 10px;font-size:12px;font-weight:600;margin-right:6px;" title="当前中心网关版本">🌐 网关 v0.1.2</span>
-        <div id="connection-status" class="status-indicator offline">
+        <div id="connection-status" class="status-indicator offline" title="实时事件长连接通道状态">
           <span class="dot"></span>
           <span class="text">Connecting...</span>
         </div>
@@ -146,7 +146,7 @@
           <div class="card-header-flex">
             <div>
               <h2 style="font-size: 16px; margin-bottom: 4px;">🚀 新机器验证安装与配对</h2>
-              <p class="form-desc" style="margin-bottom: 0;">支持<strong>一机一码（单台防重放）</strong>或<strong>一码多用（批量部署多台）</strong>。生成邀请码后，<strong>把控制台给出的命令整段复制到目标机器执行即可</strong>：命令内的脚本哈希与 CA 指纹会对每一跳做校验，无需手动下载 CA。</p>
+              <p class="form-desc" style="margin-bottom: 0;">复制下方一键命令到目标机器执行，自动完成校验与安全配对，无需手动下载 CA。</p>
             </div>
             <div style="display: flex; gap: 8px; flex-wrap: wrap;">
               <a id="btn-download-mesh" href="/download/mesh" class="btn btn-secondary btn-sm" download title="下载通用二进制 (macOS / Linux)">📥 下载 mesh (macOS/Linux)</a>
@@ -181,7 +181,7 @@
               <button class="btn btn-primary btn-sm copy-btn" data-target="node-quick-install-cmd" style="white-space: nowrap;">一键复制</button>
             </div>
             <div id="tip-install-bash" style="font-size: 11.5px; color: var(--text-muted); margin-top: 6px;">
-              💡 <strong>macOS / Linux</strong>：整段复制执行即可。命令先按哈希校验安装脚本，再按指纹校验网关 CA，之后所有下载都经该 CA 验证的 TLS；配对后按提示手动启动节点。若不方便用 <code>-k</code> 取脚本，可改用「下载 CA 证书」+ <code>--ca ./ca.crt</code> 的严格方式（见文档）。
+              💡 粘贴至终端回车执行。自动完成环境适配、CA 安全验证、集群配对并直接后台启动。
             </div>
 
             <!-- PowerShell Command Box -->
@@ -190,7 +190,7 @@
               <button class="btn btn-primary btn-sm copy-btn" data-target="node-quick-install-cmd-ps1" style="white-space: nowrap; background: #0284c7;">一键复制</button>
             </div>
             <div id="tip-install-ps1" style="display: none; font-size: 11.5px; color: #7dd3fc; margin-top: 6px;">
-              ⚡ <strong>Windows (PowerShell)</strong>：整段复制执行即可。命令先校验 install.ps1 的哈希，再由脚本按指纹校验网关 CA；配对后按提示手动启动节点。
+              ⚡ 粘贴至 PowerShell 回车执行。自动完成环境适配、CA 安全验证、集群配对并直接后台启动。
             </div>
           </div>
         </div>
@@ -235,11 +235,11 @@
             <div class="form-group">
               <label for="submit-capability">执行能力 / Agent 工具 (Capability) <span class="required">*</span></label>
               <div id="node-agent-tools-container" style="margin-bottom: 8px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center;"></div>
-              <input type="text" id="submit-capability" class="text-input" value="bash" required>
+              <input type="text" id="submit-capability" class="text-input" value="agent.run" required>
               <div class="field-hint" style="margin-top:6px; font-size:12px; color:var(--text-muted);">
                 通用工具备选：
+                <a href="#" style="color:var(--primary); margin-right:8px;" onclick="window.selectToolCapability && window.selectToolCapability('agent.run'); return false;">agent.run (节点默认)</a>
                 <a href="#" style="color:var(--primary); margin-right:8px;" onclick="window.selectToolCapability && window.selectToolCapability('bash'); return false;">bash</a>
-                <a href="#" style="color:var(--primary); margin-right:8px;" onclick="window.selectToolCapability && window.selectToolCapability('agent.run'); return false;">agent.run (默认Shell)</a>
                 <a href="#" style="color:var(--primary); margin-right:8px;" onclick="window.selectToolCapability && window.selectToolCapability('python3'); return false;">python3</a>
                 <a href="#" style="color:var(--primary); margin-right:8px;" onclick="window.selectToolCapability && window.selectToolCapability('docker'); return false;">docker</a>
                 <a href="#" style="color:var(--primary); margin-right:8px;" onclick="window.selectToolCapability && window.selectToolCapability('codex'); return false;">codex</a>
@@ -287,6 +287,7 @@
               <h2>🔌 MCP 远程协作接入 (Model Context Protocol)</h2>
               <p class="form-desc">将网关挂载至 <strong>豆包桌面版、Codex、Cursor、Claude Desktop</strong>，让大模型直接具备集群调度与自动化执行能力。</p>
             </div>
+            <button id="btn-generate-mcp-token" class="btn btn-primary" style="font-weight: 600; display: flex; align-items: center; gap: 6px;">🔑 签发新 MCP / API 令牌</button>
           </div>
 
           <div style="display: grid; grid-template-columns: 1fr; gap: 16px; margin: 16px 0;">
@@ -416,11 +417,42 @@
       <!-- Tab 7: Settings -->
       <section id="tab-settings" class="tab-pane">
         <div class="card" style="margin-bottom:20px">
-          <h2>会话与操作员凭据</h2>
-          <p id="credentials-message" class="form-desc">Web 会话有效期 8 小时，操作员凭据默认 24 小时。可随时撤销。</p>
-          <button id="credentials-refresh" class="btn btn-secondary">刷新凭据</button>
-          <div class="table-container"><table class="data-table"><thead><tr><th>凭据 ID</th><th>角色</th><th>到期时间</th><th>状态</th><th>操作</th></tr></thead><tbody id="credentials-body"></tbody></table></div>
+          <div class="card-header-flex">
+            <div>
+              <h2>会话与操作员凭据</h2>
+              <p id="credentials-message" class="form-desc" style="margin-bottom: 0;">Web 会话有效期 8 小时，操作员凭据默认 24 小时或自定义期限。可随时撤销。</p>
+            </div>
+            <div style="display: flex; gap: 8px;">
+              <button id="btn-issue-credential" class="btn btn-primary btn-sm">➕ 签发新凭据 (Token)</button>
+              <button id="credentials-refresh" class="btn btn-secondary btn-sm">刷新凭据</button>
+            </div>
+          </div>
+          <div class="table-container" style="margin-top: 14px;"><table class="data-table"><thead><tr><th>凭据 ID</th><th>角色</th><th>到期时间</th><th>状态</th><th>操作</th></tr></thead><tbody id="credentials-body"></tbody></table></div>
           <button id="credentials-more" class="btn btn-secondary" hidden>加载更多</button>
+        </div>
+        <!-- 网络与加密服务设置 (HTTP/HTTPS 开关) -->
+        <div class="card" style="margin-bottom: 20px;">
+          <div class="card-header-flex" style="align-items: flex-start;">
+            <div>
+              <h2 style="margin-bottom: 6px;">启用未加密 (HTTP) 服务</h2>
+              <p class="form-desc" style="max-width: 720px; line-height: 1.6; margin-bottom: 0;">
+                默认使用安全 HTTPS 连接。在受信任的局域网或内网开发环境中，可开启未加密 HTTP 服务，方便 MCP 客户端（如 Cursor / Claude 等）与 API 免证书接入调试。<strong>严禁将未加密服务暴露在公网</strong>。
+              </p>
+            </div>
+            <label class="toggle-switch-wrapper" style="margin-top: 4px;" title="切换 HTTP / HTTPS 模式">
+              <input type="checkbox" id="toggle-http-switch">
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+
+          <div id="network-status-banner" style="background: var(--bg-input); padding: 12px 16px; border-radius: 8px; border: 1px solid var(--border-color); margin-top: 14px; font-size: 13px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+            <div>
+              <span class="detail-label">运行模式：</span>
+              <span id="network-mode-badge" class="badge" style="background: rgba(56, 189, 248, 0.2); color: var(--primary);">HTTPS 纯加密模式</span>
+              <span id="network-mode-desc" style="color: var(--text-muted); margin-left: 8px; font-size: 12px;">（开启后 MCP 与 API 可在相同端口直接使用 http:// 免证书连接）</span>
+            </div>
+          </div>
+          <div id="network-setting-msg" class="alert hidden" style="margin-top: 12px;"></div>
         </div>
         <!-- 证书管理卡片 -->
         <div class="card" style="margin-bottom: 20px;">
@@ -471,123 +503,206 @@
         </div>
       </section>
     </main>
-
-    <!-- Task Detail Modal -->
-    <div id="task-modal" class="modal hidden">
-      <div class="modal-backdrop"></div>
-      <div class="modal-window">
-        <div class="modal-header">
-          <h3 id="modal-task-title">任务详情</h3>
-          <button class="modal-close-btn">&times;</button>
-        </div>
-        <div class="modal-body">
-          <div class="detail-row">
-            <span class="detail-label">任务 ID:</span>
-            <code id="modal-task-id"></code>
-          </div>
-          <div class="detail-row">
-            <span class="detail-label">当前状态:</span>
-            <span id="modal-task-status" class="badge"></span>
-          </div>
-          <div class="detail-row">
-            <span class="detail-label">目标节点:</span>
-            <span id="modal-task-node"></span>
-          </div>
-          <div class="detail-row">
-            <span class="detail-label">当前 Attempt:</span>
-            <span id="modal-task-attempt"></span>
-          </div>
-          <div class="detail-row">
-            <span class="detail-label">租约到期:</span>
-            <span id="modal-task-lease"></span>
-          </div>
-          <div class="detail-row">
-            <span class="detail-label">输入内容:</span>
-            <pre id="modal-task-input" class="code-block"></pre>
-          </div>
-          <div class="detail-row">
-            <span class="detail-label">执行输出 (终端流):</span>
-            <pre id="modal-task-output" class="terminal-block">等待输出...</pre>
-          </div>
-        </div>
-        <div class="modal-footer" id="modal-actions">
-          <button class="btn btn-secondary modal-close-btn">关闭</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- Reconcile Modal -->
-    <div id="reconcile-modal" class="modal hidden">
-      <div class="modal-backdrop"></div>
-      <div class="modal-window">
-        <div class="modal-header">
-          <h3>Unknown 任务对账裁决</h3>
-          <button class="modal-close-btn">&times;</button>
-        </div>
-        <div class="modal-body">
-          <p>任务 <code id="reconcile-task-id"></code> 当前处于 Unknown 状态。请选择人工裁决方案：</p>
-          <div class="reconcile-options">
-            <label class="radio-card">
-              <input type="radio" name="reconcile-action" value="requeue" checked>
-              <div class="radio-content">
-                <strong>重新排队 (Requeue)</strong>
-                <span>将任务重置为 Queued 状态，允许节点重新领取并生成新的 Attempt ID，旧 Attempt 自动失效。</span>
-              </div>
-            </label>
-            <label class="radio-card">
-              <input type="radio" name="reconcile-action" value="succeeded">
-              <div class="radio-content">
-                <strong>标记成功 (Mark Succeeded)</strong>
-                <span>确认任务副作用已在目标机完成，直接转入最终 Succeeded 状态。</span>
-              </div>
-            </label>
-            <label class="radio-card">
-              <input type="radio" name="reconcile-action" value="failed">
-              <div class="radio-content">
-                <strong>标记失败 (Mark Failed)</strong>
-                <span>确认任务执行已异常中断且无法恢复，直接归档为 Failed 状态。</span>
-              </div>
-            </label>
-        </div>
-        <div class="modal-footer">
-          <button class="btn btn-secondary modal-close-btn">取消</button>
-          <button id="reconcile-submit-btn" class="btn btn-primary">提交裁决</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- Agent Tools Detail Modal -->
-    <div id="agent-tools-modal" class="modal hidden">
-      <div class="modal-backdrop"></div>
-      <div class="modal-window" style="max-width:720px;">
-        <div class="modal-header">
-          <h3 id="agent-tools-modal-title">🖥️ 节点 Agent 工具链清单</h3>
-          <button class="modal-close-btn">&times;</button>
-        </div>
-        <div class="modal-body">
-          <p id="agent-tools-modal-subtitle" style="font-size:13px;color:var(--text-muted);margin-bottom:12px;">该节点上经由操作系统 PATH 与应用环境真实探测到的工具链详情：</p>
-          <div class="table-container" style="max-height:420px;overflow-y:auto;">
-            <table class="data-table">
-              <thead>
-                <tr>
-                  <th style="width:120px;">工具 ID</th>
-                  <th style="width:140px;">工具名称</th>
-                  <th style="width:70px;">类型</th>
-                  <th>系统绝对路径 (真实探测)</th>
-                  <th style="width:85px;">操作</th>
-                </tr>
-              </thead>
-              <tbody id="agent-tools-modal-tbody"></tbody>
-            </table>
-          </div>
-        </div>
-        <div class="modal-footer">
-          <button class="btn btn-secondary modal-close-btn">关闭</button>
-        </div>
-      </div>
-    </div>
-
   </div>
-  <script src="app.js?v=20260927_1108"></script>
+
+  <!-- Task Detail Modal -->
+  <div id="task-modal" class="modal hidden">
+    <div class="modal-backdrop"></div>
+    <div class="modal-window">
+      <div class="modal-header">
+        <h3 id="modal-task-title">任务详情</h3>
+        <button class="modal-close-btn">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="detail-row">
+          <span class="detail-label">任务 ID:</span>
+          <code id="modal-task-id"></code>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">当前状态:</span>
+          <span id="modal-task-status" class="badge"></span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">目标节点:</span>
+          <span id="modal-task-node"></span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">当前 Attempt:</span>
+          <span id="modal-task-attempt"></span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">租约到期:</span>
+          <span id="modal-task-lease"></span>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">输入内容:</span>
+          <pre id="modal-task-input" class="code-block"></pre>
+        </div>
+        <div class="detail-row">
+          <span class="detail-label">执行输出 (终端流):</span>
+          <pre id="modal-task-output" class="terminal-block">等待输出...</pre>
+        </div>
+      </div>
+      <div class="modal-footer" id="modal-actions">
+        <button class="btn btn-secondary modal-close-btn">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Reconcile Modal -->
+  <div id="reconcile-modal" class="modal hidden">
+    <div class="modal-backdrop"></div>
+    <div class="modal-window">
+      <div class="modal-header">
+        <h3>Unknown 任务对账裁决</h3>
+        <button class="modal-close-btn">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p>任务 <code id="reconcile-task-id"></code> 当前处于 Unknown 状态。请选择人工裁决方案：</p>
+        <div class="reconcile-options">
+          <label class="radio-card">
+            <input type="radio" name="reconcile-action" value="requeue" checked>
+            <div class="radio-content">
+              <strong>重新排队 (Requeue)</strong>
+              <span>将任务重置为 Queued 状态，允许节点重新领取并生成新的 Attempt ID，旧 Attempt 自动失效。</span>
+            </div>
+          </label>
+          <label class="radio-card">
+            <input type="radio" name="reconcile-action" value="succeeded">
+            <div class="radio-content">
+              <strong>标记成功 (Mark Succeeded)</strong>
+              <span>确认任务副作用已在目标机完成，直接转入最终 Succeeded 状态。</span>
+            </div>
+          </label>
+          <label class="radio-card">
+            <input type="radio" name="reconcile-action" value="failed">
+            <div class="radio-content">
+              <strong>标记失败 (Mark Failed)</strong>
+              <span>确认任务执行已异常中断且无法恢复，直接归档为 Failed 状态。</span>
+            </div>
+          </label>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary modal-close-btn">取消</button>
+        <button id="reconcile-submit-btn" class="btn btn-primary">提交裁决</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Agent Tools Detail Modal -->
+  <div id="agent-tools-modal" class="modal hidden">
+    <div class="modal-backdrop"></div>
+    <div class="modal-window" style="max-width:760px;">
+      <div class="modal-header">
+        <h3 id="agent-tools-modal-title">🖥️ 节点 Agent 工具链清单与权限配置</h3>
+        <button class="modal-close-btn">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div style="background: rgba(56, 189, 248, 0.08); border: 1px solid rgba(56, 189, 248, 0.25); border-radius: 8px; padding: 10px 14px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+          <div>
+            <span style="font-size: 13px; font-weight: 600; color: var(--primary);">🔐 工具链执行权限控制</span>
+            <p style="font-size: 12px; color: var(--text-muted); margin: 2px 0 0;">勾选允许远程 Agent / MCP 大模型调用的工具链。打勾即时自动生效并持久化配置。</p>
+          </div>
+          <div style="display: flex; gap: 6px;">
+            <button id="btn-tools-select-all" class="btn btn-secondary btn-sm" style="font-size: 11px;">全选授权</button>
+            <button id="btn-tools-select-none" class="btn btn-secondary btn-sm" style="font-size: 11px;">全不选</button>
+          </div>
+        </div>
+        <div id="agent-tools-save-status" class="alert hidden" style="margin-bottom: 10px; font-size: 12px; padding: 6px 12px;"></div>
+        <p id="agent-tools-modal-subtitle" style="font-size:13px;color:var(--text-muted);margin-bottom:12px;">该节点上经由操作系统 PATH 与应用环境真实探测到的工具链详情：</p>
+        <div class="table-container" style="max-height:420px;overflow-y:auto;">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th style="width:110px; text-align:center;">授权执行</th>
+                <th style="width:120px;">工具 ID</th>
+                <th style="width:130px;">工具名称</th>
+                <th style="width:70px;">类型</th>
+                <th>系统绝对路径 (真实探测)</th>
+                <th style="width:75px;">操作</th>
+              </tr>
+            </thead>
+            <tbody id="agent-tools-modal-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary modal-close-btn" style="min-width: 90px;">完成配置</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Issue MCP / API Token Modal -->
+  <div id="issue-token-modal" class="modal hidden">
+    <div class="modal-backdrop"></div>
+    <div class="modal-window" style="max-width:540px;">
+      <div class="modal-header">
+        <h3>🔑 签发新 MCP / API 访问凭据</h3>
+        <button class="modal-close-btn">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p style="font-size:13px; color:var(--text-muted); margin-bottom:14px;">
+          签发独立的 Bearer 访问令牌，用于将网关挂载至 <strong>Cursor、Claude Desktop、豆包桌面版</strong> 或自定义自动化脚本。
+        </p>
+        <div class="form-group" style="margin-bottom:14px;">
+          <label class="form-label" style="font-weight:600;">角色权限 (Role)</label>
+          <select id="issue-token-role" class="form-control" style="width:100%; background:var(--bg-card); color:var(--text-main); border:1px solid var(--border-color); padding:8px 12px; border-radius:6px;">
+            <option value="admin" selected>Admin (全局管理员：集群调度 + 机器管理 + 凭据管理，推荐 MCP)</option>
+            <option value="operator">Operator (操作员：调度执行 + 任务下发与取消)</option>
+            <option value="viewer">Viewer (观察员：仅允许查询节点与任务状态)</option>
+          </select>
+        </div>
+        <div class="form-group" style="margin-bottom:14px;">
+          <label class="form-label" style="font-weight:600;">有效期限 (TTL)</label>
+          <select id="issue-token-ttl" class="form-control" style="width:100%; background:var(--bg-card); color:var(--text-main); border:1px solid var(--border-color); padding:8px 12px; border-radius:6px;">
+            <option value="24">24 小时 (1 天)</option>
+            <option value="168">7 天 (1 周)</option>
+            <option value="720" selected>30 天 (1 个月，推荐开发使用)</option>
+            <option value="2160">90 天 (3 个月)</option>
+            <option value="8760">365 天 (1 年长期接入)</option>
+          </select>
+        </div>
+        <div id="issue-token-error" style="color:#ef4444; font-size:13px; display:none; margin-top:8px;"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary modal-close-btn">取消</button>
+        <button id="issue-token-submit-btn" class="btn btn-primary" style="font-weight:600;">立即签发令牌</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Token Result Modal -->
+  <div id="token-result-modal" class="modal hidden">
+    <div class="modal-backdrop"></div>
+    <div class="modal-window" style="max-width:620px;">
+      <div class="modal-header">
+        <h3 style="color:#34d399;">🎉 访问凭据 (Token) 签发成功</h3>
+        <button class="modal-close-btn">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div style="background:rgba(245, 158, 11, 0.12); border:1px solid rgba(245, 158, 11, 0.4); padding:10px 14px; border-radius:6px; margin-bottom:14px; font-size:13px; color:#fbbf24;">
+          ⚠️ <strong>请立即复制保存此令牌！</strong> 出于安全单向哈希设计，该明文 Token 仅在签发时展示一次，窗口关闭后将无法再次找回。
+        </div>
+        
+        <label class="form-label" style="font-weight:600; font-size:13px;">生成的 Bearer 访问令牌：</label>
+        <div style="display:flex; gap:8px; align-items:center; margin-top:4px; margin-bottom:16px;">
+          <input id="token-result-text" type="text" readonly style="flex:1; background:var(--bg-card); color:#a7f3d0; border:1px solid var(--border-color); padding:9px 12px; border-radius:6px; font-family:monospace; font-size:13px;" />
+          <button class="btn btn-primary copy-btn" data-target="token-result-text" style="font-weight:600; white-space:nowrap;">📋 一键复制 Token</button>
+        </div>
+
+        <label class="form-label" style="font-weight:600; font-size:13px;">Cursor / Claude Desktop 预填充配置 (已带此 Token)：</label>
+        <pre id="token-result-config" class="code-block" style="max-height:160px; margin-top:6px; font-size:12px;"></pre>
+        <div style="display:flex; justify-content:flex-end; margin-top:6px;">
+          <button class="btn btn-secondary btn-sm copy-btn" data-target="token-result-config">📋 复制客户端配置</button>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary modal-close-btn" style="min-width:90px;">完成</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js?v=20260928_0120"></script>
 </body>
 </html>

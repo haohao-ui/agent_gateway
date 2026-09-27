@@ -12,7 +12,7 @@ import (
 
 func runDoctor(ctx context.Context, args []string) error {
 	cmd := newCommand("doctor", "Inspect and diagnose node or server configuration, certificates, clock drift, and database integrity.")
-	nodeDir := cmd.flags.String("node-dir", envString("MESH_NODE_DIR", "./node"), "path to node directory holding credentials and state")
+	nodeDir := cmd.flags.String("node-dir", defaultNodeDir(), "path to node directory holding credentials and state (default: ~/.agent-mesh-node)")
 	serverMode := cmd.flags.Bool("server-mode", false, "run diagnostics in server mode instead of node mode")
 	dataDir := cmd.flags.String("data-dir", envString("MESH_DATA_DIR", "./gateway-data"), "path to gateway server data directory (when --server-mode is set)")
 	jsonOutput := cmd.flags.Bool("json", false, "output results in JSON format")

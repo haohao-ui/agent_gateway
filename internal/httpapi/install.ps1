@@ -28,6 +28,15 @@ param(
     [switch]$Help
 )
 
+$defaultServer = ''
+$defaultToken = ''
+$defaultCaFp = ''
+
+if (-not $Server -and $defaultServer) { $Server = $defaultServer }
+if (-not $Token -and $defaultToken) { $Token = $defaultToken }
+if (-not $CaFingerprint -and $defaultCaFp) { $CaFingerprint = $defaultCaFp }
+if ($defaultServer -and -not $Start) { $Start = $true }
+
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
@@ -114,6 +123,10 @@ try {
     }
 
     $exe = Join-Path $Dir 'mesh.exe'
+    # 若有正在运行的 mesh.exe，先停止以避免 Windows 文件锁定阻碍更新
+    Get-Process -Name 'mesh' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 500
+
     if ($strong) {
         Write-Host '校验等级：完整验签（独立验证器 + 带外公钥）'
         & $env:MESH_VERIFY_BIN release fetch --server $Server --ca $Ca --public-key $env:MESH_RELEASE_KEY --target $target --out $exe
@@ -147,6 +160,21 @@ try {
         }
     }
 
+    # 若当前机器已有运行中的节点，先停止旧实例，避免多个进程产生重复设备
+    $pidFile = Join-Path $Dir 'node.pid'
+    if (Test-Path -LiteralPath $pidFile) {
+        try { & $exe node stop --dir $Dir } catch { }
+    }
+
+    # 若已有旧配对，自动归档备份，保证重新配对顺畅完成
+    $oldKey = Join-Path $Dir 'node.key'
+    if (Test-Path -LiteralPath $oldKey) {
+        Write-Host "检测到已有配对信息，正在备份并更新节点身份..."
+        $backupDir = Join-Path $Dir ("backup-" + (Get-Date -Format 'yyyyMMddHHmmss'))
+        New-Item -ItemType Directory -Force -Path $backupDir | Out-Null
+        Get-ChildItem -Path $Dir -Filter 'node.*' | Move-Item -Destination $backupDir -Force -ErrorAction SilentlyContinue
+    }
+
     # 3. 配对：邀请码经 stdin 传给 mesh，不出现在 URL 或命令行参数中。
     $tokenSource = $TokenFile
     if ($Token) {
@@ -167,14 +195,30 @@ try {
     }
 
     Write-Host '安装与配对完成。'
+
+    # 将节点目录加入当前用户 PATH，使终端可直接执行 mesh 命令
+    try {
+        $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+        if ($userPath -and ($userPath -split ';' -notcontains $Dir)) {
+            [Environment]::SetEnvironmentVariable('Path', "$userPath;$Dir", 'User')
+        }
+        if ($env:Path -split ';' -notcontains $Dir) {
+            $env:Path = "$env:Path;$Dir"
+        }
+    }
+    catch { }
+
     if ($Start) {
-        Start-Process -FilePath $exe -ArgumentList @('node', '--dir', $Dir, '--config', (Join-Path $Dir 'node.json')) `
-            -RedirectStandardOutput (Join-Path $Dir 'node.log') -RedirectStandardError (Join-Path $Dir 'node.err.log') -WindowStyle Hidden
-        Write-Host "节点已在后台启动，日志：$(Join-Path $Dir 'node.log')"
+        & $exe node start --dir $Dir
     }
     else {
-        Write-Host "检查 $(Join-Path $Dir 'node.json') 后手动启动："
-        Write-Host "  $exe node --dir `"$Dir`" --config `"$(Join-Path $Dir 'node.json')`""
+        Write-Host "常用管理命令："
+        Write-Host "  mesh node start      # 在后台启动节点"
+        Write-Host "  mesh node status     # 查看节点运行状态与最新日志"
+        Write-Host "  mesh node stop       # 停止节点进程"
+        Write-Host "  mesh node restart    # 重启节点进程"
+        Write-Host "  mesh node reload     # 重载节点配置"
+        Write-Host "  mesh node            # 前台交互式运行"
     }
 }
 finally {

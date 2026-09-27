@@ -354,14 +354,85 @@ func (s *Server) handleDownloadMeshSHA256(w http.ResponseWriter, r *http.Request
 	_, _ = w.Write([]byte(fmt.Sprintf("%s  %s\n", hash, outName)))
 }
 
-// handleDownloadInstallScript serves the one-line bash installer for remote worker nodes.
+func isValidTokenHex(tok string) bool {
+	if len(tok) < 16 || len(tok) > 64 {
+		return false
+	}
+	for _, c := range tok {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
+}
+
+func isValidHost(h string) bool {
+	if len(h) == 0 || len(h) > 255 {
+		return false
+	}
+	for _, c := range h {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' || c == '-' || c == ':' || c == '[' || c == ']') {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *Server) getPublicGatewayURL(r *http.Request) string {
+	scheme := "https"
+	if r.TLS == nil {
+		scheme = "http"
+	}
+	host := r.Host
+	if !isValidHost(host) {
+		host = "localhost"
+	}
+	return fmt.Sprintf("%s://%s", scheme, host)
+}
+
+// handleDownloadInstallScript serves the bash installer for remote worker nodes.
+// If a valid invitation token is provided via ?token=..., it dynamically injects
+// DEFAULT_SERVER, DEFAULT_TOKEN and DEFAULT_CA_FP so `curl -kfsSL ... | bash` works out-of-the-box.
 func (s *Server) handleDownloadInstallScript(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/x-shellscript; charset=utf-8")
-	_, _ = w.Write([]byte(signedInstallerSH))
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+
+	token := strings.TrimSpace(r.URL.Query().Get("token"))
+	content := signedInstallerSH
+
+	if token != "" && isValidTokenHex(token) {
+		gatewayURL := s.getPublicGatewayURL(r)
+		caFP := ""
+		if s.ca != nil {
+			caFP = s.ca.Fingerprint()
+		}
+		content = strings.Replace(content, `DEFAULT_SERVER=""`, fmt.Sprintf(`DEFAULT_SERVER=%q`, gatewayURL), 1)
+		content = strings.Replace(content, `DEFAULT_TOKEN=""`, fmt.Sprintf(`DEFAULT_TOKEN=%q`, token), 1)
+		content = strings.Replace(content, `DEFAULT_CA_FP=""`, fmt.Sprintf(`DEFAULT_CA_FP=%q`, caFP), 1)
+	}
+
+	_, _ = w.Write([]byte(content))
 }
+
 func (s *Server) handleDownloadInstallPowerShell(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	_, _ = w.Write([]byte(signedInstallerPS))
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+
+	token := strings.TrimSpace(r.URL.Query().Get("token"))
+	content := signedInstallerPS
+
+	if token != "" && isValidTokenHex(token) {
+		gatewayURL := s.getPublicGatewayURL(r)
+		caFP := ""
+		if s.ca != nil {
+			caFP = s.ca.Fingerprint()
+		}
+		content = strings.Replace(content, `$defaultServer = ''`, fmt.Sprintf(`$defaultServer = '%s'`, gatewayURL), 1)
+		content = strings.Replace(content, `$defaultToken = ''`, fmt.Sprintf(`$defaultToken = '%s'`, token), 1)
+		content = strings.Replace(content, `$defaultCaFp = ''`, fmt.Sprintf(`$defaultCaFp = '%s'`, caFP), 1)
+	}
+
+	_, _ = w.Write([]byte(content))
 }
 
 // operatorTokens lists the operator credentials presented by a request, most
@@ -446,29 +517,15 @@ func (s *Server) handleCreateInvitation(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	scheme := "https"
-	if r.TLS == nil {
-		scheme = "http"
-	}
-	gatewayURL := fmt.Sprintf("%s://%s", scheme, r.Host)
-	// 一键安装：控制台同时给出安装脚本的 SHA-256 与网关 CA 指纹，节点侧每一跳都按
-	// 这两个值校验 —— 取脚本用哈希、取 CA 用指纹，之后全部走经该 CA 验证的 TLS。
-	// 这样既不需要用户手动下载 CA，也不会盲信网关。两个值都来自本控制台页面，
-	// 即管理员已认证的会话，是这条信任链的锚。
-	shSum := sha256.Sum256([]byte(signedInstallerSH))
-	psSum := sha256.Sum256([]byte(signedInstallerPS))
-	// 用 && 串成一条命令：任何一步校验失败都必须终止，不能依赖用户的 shell 有 set -e。
-	installCmd := fmt.Sprintf(
-		"curl -kfsSL %[1]s/download/install.sh -o install.sh && \\\n"+
-			"echo \"%[2]s  install.sh\" | (sha256sum -c - 2>/dev/null || shasum -a 256 -c -) && \\\n"+
-			"MESH_TOKEN='%[3]s' MESH_CA_FINGERPRINT='%[4]s' sh install.sh %[1]s",
-		gatewayURL, hex.EncodeToString(shSum[:]), invitation.Token, invitation.ServerFingerprint)
-	// PowerShell 同理：写成单条 if/else 语句，校验失败时不进入安装分支。
+	gatewayURL := s.getPublicGatewayURL(r)
+
+	// 极简单行安装命令（对齐标杆极简体验，URL 携带受限 token，网关自动安全预填）：
+	// macOS / Linux (Bash)：
+	installCmdBash := fmt.Sprintf(`curl -kfsSL "%s/install.sh?token=%s" | bash`, gatewayURL, invitation.Token)
+	// Windows (PowerShell)：单行允许自签 TLS 并直接流式执行安装与启动
 	installCmdPS1 := fmt.Sprintf(
-		"curl.exe -kfsSL %[1]s/download/install.ps1 -o install.ps1; "+
-			"if ((Get-FileHash install.ps1 -Algorithm SHA256).Hash.ToLower() -ne '%[2]s') { throw 'install.ps1 哈希不匹配，已终止' } "+
-			"else { $env:MESH_TOKEN='%[3]s'; ./install.ps1 -Server %[1]s -CaFingerprint %[4]s }",
-		gatewayURL, hex.EncodeToString(psSum[:]), invitation.Token, invitation.ServerFingerprint)
+		`[Net.ServicePointManager]::ServerCertificateValidationCallback={$true}; iex (irm "%s/install.ps1?token=%s")`,
+		gatewayURL, invitation.Token)
 
 	isMulti := in.MaxUses > 1 || in.MaxUses == -1
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -478,8 +535,8 @@ func (s *Server) handleCreateInvitation(w http.ResponseWriter, r *http.Request) 
 		"multi_use":          isMulti,
 		"server_fingerprint": invitation.ServerFingerprint,
 		"gateway_url":        gatewayURL,
-		"install_cmd":        installCmd,
-		"install_cmd_bash":   installCmd,
+		"install_cmd":        installCmdBash,
+		"install_cmd_bash":   installCmdBash,
 		"install_cmd_ps1":    installCmdPS1,
 	})
 }

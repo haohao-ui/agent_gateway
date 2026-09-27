@@ -59,7 +59,7 @@ func runTask(ctx context.Context, args []string) error {
 // taskClient builds a client from the identity in nodeDir.
 func taskClient(ctx context.Context, nodeDir, serverOverride string) (*node.GatewayClient, node.PairState, error) {
 	if nodeDir == "" {
-		nodeDir = "./node"
+		nodeDir = defaultNodeDir()
 	}
 	state, err := node.LoadState(nodeDir)
 	if err != nil {
@@ -92,7 +92,7 @@ func taskClient(ctx context.Context, nodeDir, serverOverride string) (*node.Gate
 
 func runTaskSubmit(ctx context.Context, args []string) error {
 	cmd := newCommand("task submit", "Queue a task for the machine in --node-dir.")
-	nodeDir := cmd.flags.String("node-dir", envString("MESH_NODE_DIR", "./node"), "directory holding the machine identity")
+	nodeDir := cmd.flags.String("node-dir", defaultNodeDir(), "directory holding the machine identity (default: ~/.agent-mesh-node)")
 	server := cmd.flags.String("server", envOrDefault([]string{"MESH_SERVER_URL", "MESH_SERVER"}, ""), "override the gateway URL recorded at pairing time")
 	tokenFile := cmd.flags.String("token-file", envString("MESH_TOKEN_FILE", ""), "operator credential file; requires --server and --ca")
 	caFile := cmd.flags.String("ca", envOrDefault([]string{"MESH_CA_FILE", "MESH_CA"}, ""), "trusted gateway CA file")
@@ -144,7 +144,7 @@ func runTaskSubmit(ctx context.Context, args []string) error {
 
 func runTaskGet(ctx context.Context, args []string) error {
 	cmd := newCommand("task get", "Show one task owned by the machine in --node-dir.")
-	nodeDir := cmd.flags.String("node-dir", envString("MESH_NODE_DIR", "./node"), "directory holding the machine identity")
+	nodeDir := cmd.flags.String("node-dir", defaultNodeDir(), "directory holding the machine identity (default: ~/.agent-mesh-node)")
 	server := cmd.flags.String("server", envOrDefault([]string{"MESH_SERVER_URL", "MESH_SERVER"}, ""), "override the gateway URL recorded at pairing time")
 	tokenFile := cmd.flags.String("token-file", envString("MESH_TOKEN_FILE", ""), "operator credential file; requires --server and --ca")
 	caFile := cmd.flags.String("ca", envOrDefault([]string{"MESH_CA_FILE", "MESH_CA"}, ""), "trusted gateway CA file")
@@ -176,7 +176,7 @@ func runTaskGet(ctx context.Context, args []string) error {
 
 func runTaskCancel(ctx context.Context, args []string) error {
 	cmd := newCommand("task cancel", "Ask for a task owned by the machine in --node-dir to stop.")
-	nodeDir := cmd.flags.String("node-dir", envString("MESH_NODE_DIR", "./node"), "directory holding the machine identity")
+	nodeDir := cmd.flags.String("node-dir", defaultNodeDir(), "directory holding the machine identity (default: ~/.agent-mesh-node)")
 	server := cmd.flags.String("server", envOrDefault([]string{"MESH_SERVER_URL", "MESH_SERVER"}, ""), "override the gateway URL recorded at pairing time")
 	tokenFile := cmd.flags.String("token-file", envString("MESH_TOKEN_FILE", ""), "operator credential file; requires --server and --ca")
 	caFile := cmd.flags.String("ca", envOrDefault([]string{"MESH_CA_FILE", "MESH_CA"}, ""), "trusted gateway CA file")

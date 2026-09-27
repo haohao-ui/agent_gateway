@@ -19,13 +19,18 @@
 set -euo pipefail
 umask 077
 
-SERVER=""
+DEFAULT_SERVER=""
+DEFAULT_TOKEN=""
+DEFAULT_CA_FP=""
+
+SERVER="${DEFAULT_SERVER:-}"
 CA="${MESH_TLS_CA:-${MESH_CA:-}}"
-CA_FP="${MESH_CA_FINGERPRINT:-}"
-TOKEN="${MESH_TOKEN:-}"
+CA_FP="${DEFAULT_CA_FP:-${MESH_CA_FINGERPRINT:-}}"
+TOKEN="${DEFAULT_TOKEN:-${MESH_TOKEN:-}}"
 TOKEN_FILE=""
 DIR="${MESH_NODE_DIR:-$HOME/.agent-mesh-node}"
-START=0
+START=1
+NODE_PID=""
 TMP=""
 
 usage() {
@@ -237,6 +242,22 @@ else
 fi
 chmod 755 "$DIR/mesh"
 
+# 准备标准可执行文件 bin 目录
+BIN_INSTALL=""
+if [ -w "/usr/local/bin" ]; then
+	BIN_INSTALL="/usr/local/bin/mesh"
+elif [ -d "$HOME/.local/bin" ] || mkdir -p "$HOME/.local/bin" 2>/dev/null; then
+	BIN_INSTALL="$HOME/.local/bin/mesh"
+elif [ -d "$HOME/bin" ] || mkdir -p "$HOME/bin" 2>/dev/null; then
+	BIN_INSTALL="$HOME/bin/mesh"
+fi
+
+if [ -n "$BIN_INSTALL" ]; then
+	rm -f "$BIN_INSTALL" 2>/dev/null || true
+	cp -f "$DIR/mesh" "$BIN_INSTALL" 2>/dev/null || ln -sf "$DIR/mesh" "$BIN_INSTALL" 2>/dev/null || true
+	chmod 755 "$BIN_INSTALL" 2>/dev/null || true
+fi
+
 # 3. 配对：邀请码经 stdin 传给 mesh，不出现在 URL 或 argv 中。
 TOKEN_SOURCE=""
 if [ -n "$TOKEN" ]; then
@@ -245,6 +266,20 @@ if [ -n "$TOKEN" ]; then
 else
 	TOKEN_SOURCE="$TOKEN_FILE"
 fi
+
+# 若当前机器已有运行中的节点，先停止旧实例，避免多个进程产生重复设备
+if [ -f "$DIR/node.pid" ]; then
+	"$DIR/mesh" node stop --dir "$DIR" >/dev/null 2>&1 || true
+fi
+
+# 若已有旧配对，自动归档备份，保证重新配对顺畅完成
+if [ -f "$DIR/node.key" ]; then
+	echo "检测到已有配对信息，正在备份并更新节点身份..."
+	BACKUP_DIR="$DIR/backup-$(date +%Y%m%d%H%M%S)"
+	mkdir -p "$BACKUP_DIR"
+	mv "$DIR"/node.* "$BACKUP_DIR/" 2>/dev/null || true
+fi
+
 "$DIR/mesh" pair --server "$SERVER" --ca "$CA" --token - --dir "$DIR" <"$TOKEN_SOURCE"
 [ -n "$TOKEN" ] && rm -f "$TOKEN_SOURCE"
 
@@ -253,10 +288,15 @@ if [ "$STRONG" = 1 ] && [ ! -e "$DIR/release.pub" ]; then
 fi
 
 echo '安装与配对完成。'
-if [ "$START" = 1 ]; then
-	nohup "$DIR/mesh" node --dir "$DIR" --config "$DIR/node.json" >"$DIR/node.log" 2>&1 &
-	echo "节点已在后台启动（PID $!），日志：$DIR/node.log"
+# 如果带有 --start 或默认自动启动守护
+if [ "${START:-0}" = 1 ] || [ "${AUTO_START:-1}" = 1 ]; then
+	"$DIR/mesh" node start --dir "$DIR"
 else
-	echo "检查 ${DIR}/node.json 后手动启动："
-	echo "  $DIR/mesh node --dir \"$DIR\" --config \"$DIR/node.json\""
+	echo "常用管理命令："
+	echo "  mesh node start      # 在后台启动节点"
+	echo "  mesh node status     # 查看节点运行状态与最新日志"
+	echo "  mesh node stop       # 停止节点进程"
+	echo "  mesh node restart    # 重启节点进程"
+	echo "  mesh node reload     # 重载节点配置"
+	echo "  mesh node            # 前台交互式运行"
 fi

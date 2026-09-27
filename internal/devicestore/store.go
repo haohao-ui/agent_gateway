@@ -16,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"agent-gateway/internal/protocol"
+	"encoding/json"
 	"modernc.org/sqlite"
 )
 
@@ -70,18 +71,23 @@ func Open(path string) (*Store, error) {
 		if version > 1 {
 			return fmt.Errorf("unsupported device schema: %w", protocol.ErrConflict)
 		}
-		if version == 1 {
-			return nil
-		}
-		_, err := tx.ExecContext(ctx, `CREATE TABLE devices (
+		if version == 0 {
+			_, err := tx.ExecContext(ctx, `CREATE TABLE devices (
  node_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, expires_at TEXT NOT NULL,
- revoked INTEGER NOT NULL DEFAULT 0 CHECK(revoked IN (0,1)));
+ revoked INTEGER NOT NULL DEFAULT 0 CHECK(revoked IN (0,1)),
+ machine_id TEXT, hostname TEXT, allowed_tools TEXT);
  CREATE TABLE device_audit (
  id INTEGER PRIMARY KEY, actor TEXT NOT NULL, action TEXT NOT NULL,
  node_id TEXT NOT NULL REFERENCES devices(node_id), outcome TEXT NOT NULL,
  reason TEXT NOT NULL, occurred_at TEXT NOT NULL);
  PRAGMA user_version=1;`)
-		return err
+			return err
+		}
+		// If existing version 1 database lacks the columns, add them idempotently.
+		_, _ = tx.ExecContext(ctx, "ALTER TABLE devices ADD COLUMN machine_id TEXT;")
+		_, _ = tx.ExecContext(ctx, "ALTER TABLE devices ADD COLUMN hostname TEXT;")
+		_, _ = tx.ExecContext(ctx, "ALTER TABLE devices ADD COLUMN allowed_tools TEXT;")
+		return nil
 	})
 	if err != nil {
 		_ = db.Close()
@@ -109,6 +115,13 @@ const timeFormat = "2006-01-02T15:04:05.000000000Z"
 // Register creates an immutable certificate binding. An identical active binding
 // is idempotent; changed or revoked bindings must never be silently replaced.
 func (s *Store) Register(ctx context.Context, nodeID, fingerprint string, expiresAt time.Time) error {
+	return s.RegisterWithDevice(ctx, nodeID, fingerprint, "", "", expiresAt)
+}
+
+// RegisterWithDevice creates a certificate binding associated with a machine identity.
+// If another active binding belongs to the same physical machine (machine_id or hostname),
+// it is atomically superseded so a re-enrolled host does not leave ghost nodes.
+func (s *Store) RegisterWithDevice(ctx context.Context, nodeID, fingerprint, machineID, hostname string, expiresAt time.Time) error {
 	if !validText(nodeID, 128) || !validFingerprint(fingerprint) || expiresAt.Year() < 1 || expiresAt.Year() > 9999 {
 		return protocol.ErrInvalid
 	}
@@ -129,7 +142,41 @@ func (s *Store) Register(ctx context.Context, nodeID, fingerprint string, expire
 		if !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		_, err = tx.ExecContext(ctx, "INSERT INTO devices(node_id,fingerprint,expires_at) VALUES(?,?,?)", nodeID, fingerprint, expiry)
+
+		cleanMachine := strings.TrimSpace(machineID)
+		cleanHost := strings.TrimSpace(hostname)
+		if cleanMachine != "" || cleanHost != "" {
+			var query string
+			var args []any
+			if cleanMachine != "" && cleanHost != "" {
+				query = "SELECT node_id FROM devices WHERE revoked=0 AND node_id!=? AND (machine_id=? OR (hostname=? AND hostname!=''))"
+				args = []any{nodeID, cleanMachine, cleanHost}
+			} else if cleanMachine != "" {
+				query = "SELECT node_id FROM devices WHERE revoked=0 AND node_id!=? AND machine_id=?"
+				args = []any{nodeID, cleanMachine}
+			} else {
+				query = "SELECT node_id FROM devices WHERE revoked=0 AND node_id!=? AND hostname=? AND hostname!=''"
+				args = []any{nodeID, cleanHost}
+			}
+			rows, qErr := tx.QueryContext(ctx, query, args...)
+			if qErr == nil {
+				var supersedes []string
+				for rows.Next() {
+					var oldID string
+					if scanErr := rows.Scan(&oldID); scanErr == nil {
+						supersedes = append(supersedes, oldID)
+					}
+				}
+				rows.Close()
+				for _, oldID := range supersedes {
+					_, _ = tx.ExecContext(ctx, "UPDATE devices SET revoked=1 WHERE node_id=?", oldID)
+					_, _ = tx.ExecContext(ctx, "INSERT INTO device_audit(actor,action,node_id,outcome,reason,occurred_at) VALUES(?,?,?,?,?,?)",
+						"gateway", "device.supersede", oldID, "success", "superseded_by:"+nodeID, s.now().UTC().Format(timeFormat))
+				}
+			}
+		}
+
+		_, err = tx.ExecContext(ctx, "INSERT INTO devices(node_id,fingerprint,expires_at,machine_id,hostname) VALUES(?,?,?,?,?)", nodeID, fingerprint, expiry, cleanMachine, cleanHost)
 		return err
 	})
 }
@@ -208,15 +255,18 @@ func (s *Store) Delete(ctx context.Context, nodeID string) error {
 
 // Device represents a registered node certificate binding and its status.
 type Device struct {
-	NodeID      string    `json:"node_id"`
-	Fingerprint string    `json:"fingerprint"`
-	ExpiresAt   time.Time `json:"expires_at"`
-	Revoked     bool      `json:"revoked"`
+	NodeID       string    `json:"node_id"`
+	Fingerprint  string    `json:"fingerprint"`
+	ExpiresAt    time.Time `json:"expires_at"`
+	Revoked      bool      `json:"revoked"`
+	MachineID    string    `json:"machine_id,omitempty"`
+	Hostname     string    `json:"hostname,omitempty"`
+	AllowedTools []string  `json:"allowed_tools,omitempty"`
 }
 
 // List returns all registered devices in the database ordered by node_id.
 func (s *Store) List(ctx context.Context) ([]Device, error) {
-	rows, err := s.db.QueryContext(ctx, "SELECT node_id, fingerprint, expires_at, revoked FROM devices ORDER BY node_id ASC")
+	rows, err := s.db.QueryContext(ctx, "SELECT node_id, fingerprint, expires_at, revoked, COALESCE(machine_id, ''), COALESCE(hostname, ''), COALESCE(allowed_tools, '') FROM devices ORDER BY node_id ASC")
 	if err != nil {
 		return nil, fmt.Errorf("list devices: %w", err)
 	}
@@ -227,7 +277,8 @@ func (s *Store) List(ctx context.Context) ([]Device, error) {
 		var d Device
 		var expiry string
 		var revoked int
-		if err := rows.Scan(&d.NodeID, &d.Fingerprint, &expiry, &revoked); err != nil {
+		var machID, host, rawTools sql.NullString
+		if err := rows.Scan(&d.NodeID, &d.Fingerprint, &expiry, &revoked, &machID, &host, &rawTools); err != nil {
 			return nil, fmt.Errorf("scan device: %w", err)
 		}
 		until, err := time.Parse(timeFormat, expiry)
@@ -236,6 +287,18 @@ func (s *Store) List(ctx context.Context) ([]Device, error) {
 		}
 		d.ExpiresAt = until
 		d.Revoked = revoked == 1
+		if machID.Valid {
+			d.MachineID = machID.String
+		}
+		if host.Valid {
+			d.Hostname = host.String
+		}
+		if rawTools.Valid && strings.TrimSpace(rawTools.String) != "" {
+			_ = json.Unmarshal([]byte(rawTools.String), &d.AllowedTools)
+		}
+		if d.AllowedTools == nil {
+			d.AllowedTools = []string{}
+		}
 		devices = append(devices, d)
 	}
 	if err := rows.Err(); err != nil {
@@ -245,6 +308,55 @@ func (s *Store) List(ctx context.Context) ([]Device, error) {
 		devices = []Device{}
 	}
 	return devices, nil
+}
+
+// GetAllowedTools returns the list of authorized tools for a node.
+func (s *Store) GetAllowedTools(ctx context.Context, nodeID string) ([]string, error) {
+	var raw sql.NullString
+	err := s.db.QueryRowContext(ctx, "SELECT allowed_tools FROM devices WHERE node_id=?", nodeID).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, protocol.ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get allowed tools: %w", err)
+	}
+	if !raw.Valid || strings.TrimSpace(raw.String) == "" {
+		return []string{}, nil
+	}
+	var tools []string
+	if err := json.Unmarshal([]byte(raw.String), &tools); err != nil {
+		return []string{}, nil
+	}
+	if tools == nil {
+		tools = []string{}
+	}
+	return tools, nil
+}
+
+// SetAllowedTools updates the authorized tools list for a node.
+func (s *Store) SetAllowedTools(ctx context.Context, nodeID string, tools []string) error {
+	if !validText(nodeID, 128) {
+		return protocol.ErrInvalid
+	}
+	if tools == nil {
+		tools = []string{}
+	}
+	bytes, err := json.Marshal(tools)
+	if err != nil {
+		return protocol.ErrInvalid
+	}
+	return s.write(ctx, func(tx *sql.Tx) error {
+		var exists bool
+		err := tx.QueryRowContext(ctx, "SELECT 1 FROM devices WHERE node_id=?", nodeID).Scan(&exists)
+		if errors.Is(err, sql.ErrNoRows) {
+			return protocol.ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, "UPDATE devices SET allowed_tools=? WHERE node_id=?", string(bytes), nodeID)
+		return err
+	})
 }
 
 // SQLite's busy handler may not immediately observe cancellation; each wait is

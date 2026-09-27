@@ -24,7 +24,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"time"
 
 	"agent-gateway/internal/protocol"
@@ -174,7 +177,155 @@ func (c *Config) capabilityFor(task protocol.Task) (*Capability, error) {
 		}
 		return &c.Capabilities[i], nil
 	}
+
+	// Dynamic fallback for installed toolchains discovered on the host
+	if dynCap, ok := c.dynamicCapabilityFor(task.Capability); ok {
+		return dynCap, nil
+	}
+
 	return nil, fmt.Errorf("%w: capability %s is not served by this node", protocol.ErrInvalid, task.Capability)
+}
+
+func (c *Config) dynamicCapabilityFor(name string) (*Capability, bool) {
+	name = strings.TrimSpace(strings.ToLower(name))
+	if name == "" {
+		return nil, false
+	}
+
+	// 1. Shells: bash, sh, zsh, powershell, pwsh, cmd
+	if name == "bash" || name == "sh" || name == "zsh" {
+		shell, args := DefaultShellAdapter()
+		if p, err := exec.LookPath(name); err == nil && p != "" {
+			if abs, err := filepath.Abs(p); err == nil {
+				shell = abs
+			}
+		}
+		return &Capability{
+			Name:           name,
+			Version:        1,
+			InstructionKey: defaultInstructionKey,
+			Adapter: Adapter{
+				Executable: shell,
+				Args:       args,
+			},
+		}, true
+	}
+	if name == "powershell" || name == "pwsh" {
+		if p, err := exec.LookPath(name); err == nil && p != "" {
+			return &Capability{
+				Name:           name,
+				Version:        1,
+				InstructionKey: defaultInstructionKey,
+				Adapter: Adapter{
+					Executable: p,
+					Args:       []string{"-NoProfile", "-NonInteractive", "-Command", "{instruction}"},
+				},
+			}, true
+		}
+	}
+	if name == "cmd" {
+		comspec := os.Getenv("COMSPEC")
+		if comspec == "" {
+			comspec = "cmd.exe"
+		}
+		return &Capability{
+			Name:           name,
+			Version:        1,
+			InstructionKey: defaultInstructionKey,
+			Adapter: Adapter{
+				Executable: comspec,
+				Args:       []string{"/c", "{instruction}"},
+			},
+		}, true
+	}
+
+	// 2. Interpreters: python, python3, node
+	if name == "python" || name == "python3" {
+		if p, err := exec.LookPath(name); err == nil && p != "" {
+			return &Capability{
+				Name:           name,
+				Version:        1,
+				InstructionKey: defaultInstructionKey,
+				Adapter: Adapter{
+					Executable: p,
+					Args:       []string{"-c", "{instruction}"},
+				},
+			}, true
+		}
+	}
+	if name == "node" {
+		if p, err := exec.LookPath(name); err == nil && p != "" {
+			return &Capability{
+				Name:           name,
+				Version:        1,
+				InstructionKey: defaultInstructionKey,
+				Adapter: Adapter{
+					Executable: p,
+					Args:       []string{"-e", "{instruction}"},
+				},
+			}, true
+		}
+	}
+
+	// 3. AI Agent CLIs
+	agentCLIs := map[string][]string{
+		"claude":   {"-p", "{instruction}"},
+		"codex":    {"exec", "--skip-git-repo-check", "--", "{instruction}"},
+		"agy":      {"--batch", "{instruction}"},
+		"hermes":   {"chat", "-m", "{instruction}"},
+		"gemini":   {"--prompt", "{instruction}"},
+		"aider":    {"--message", "{instruction}"},
+		"opencode": {"run", "{instruction}"},
+	}
+	if args, ok := agentCLIs[name]; ok {
+		if p, err := exec.LookPath(name); err == nil && p != "" {
+			return &Capability{
+				Name:           name,
+				Version:        1,
+				InstructionKey: defaultInstructionKey,
+				Adapter: Adapter{
+					Executable: p,
+					Args:       args,
+				},
+			}, true
+		}
+	}
+
+	// 4. GUI Applications on macOS (open command)
+	if runtime.GOOS == "darwin" {
+		for appName, meta := range knownDarwinApps {
+			if meta.ID == name {
+				appPath := filepath.Join("/Applications", appName)
+				if _, err := os.Stat(appPath); err == nil {
+					return &Capability{
+						Name:           name,
+						Version:        1,
+						InstructionKey: defaultInstructionKey,
+						Adapter: Adapter{
+							Executable: "/usr/bin/open",
+							Args:       []string{"-a", appName},
+						},
+					}, true
+				}
+			}
+		}
+	}
+
+	// 5. Any other detected binary in PATH (e.g. docker, git, curl, go)
+	if p, err := exec.LookPath(name); err == nil && p != "" {
+		shell, _ := DefaultShellAdapter()
+		return &Capability{
+			Name:           name,
+			Version:        1,
+			InstructionKey: defaultInstructionKey,
+			Adapter: Adapter{
+				Executable: shell,
+				Args:       []string{"-c", "{instruction}"},
+			},
+		}, true
+	}
+
+	return nil, false
 }
 
 // renewInterval returns how often the lease is extended during execution.
