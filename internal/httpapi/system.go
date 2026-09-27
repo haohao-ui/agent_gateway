@@ -1,12 +1,14 @@
 package httpapi
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -86,12 +88,12 @@ func (s *Server) requireAdminPrincipal(w http.ResponseWriter, r *http.Request) b
 	if s.policies == nil {
 		return true
 	}
-	token := extractOperatorToken(r)
-	if token == "" {
+	tokens := operatorTokens(r)
+	if len(tokens) == 0 {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "operator token required")
 		return false
 	}
-	p, err := s.policies.Authenticate(r.Context(), token)
+	p, _, err := s.authenticateOperator(r.Context(), tokens)
 	if err != nil {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "invalid operator token")
 		return false
@@ -351,18 +353,39 @@ func (s *Server) handleDownloadInstallPowerShell(w http.ResponseWriter, r *http.
 	_, _ = w.Write([]byte(signedInstallerPS))
 }
 
-func extractOperatorToken(r *http.Request) string {
+// operatorTokens lists the operator credentials presented by a request, most
+// explicit first: an Authorization: Bearer header, then the browser session
+// cookie. Both are ordinary credentials, so callers must try them in order: a
+// stale header must not shadow a session cookie that is still valid, which
+// otherwise locks a console out until the browser's stored token is cleared.
+func operatorTokens(r *http.Request) []string {
+	tokens := make([]string, 0, 2)
 	headers := r.Header.Values("Authorization")
 	if len(headers) == 1 {
 		fields := strings.Fields(headers[0])
 		if len(fields) == 2 && strings.EqualFold(fields[0], "Bearer") && len(fields[1]) <= 1024 {
-			return fields[1]
+			tokens = append(tokens, fields[1])
 		}
 	}
 	if c, err := r.Cookie("gateway_token"); err == nil && c.Value != "" && len(c.Value) <= 1024 {
-		return c.Value
+		tokens = append(tokens, c.Value)
 	}
-	return ""
+	return tokens
+}
+
+// authenticateOperator accepts the first presented credential the store accepts
+// and returns the credential that worked, so streaming handlers re-validate the
+// same one.
+func (s *Server) authenticateOperator(ctx context.Context, tokens []string) (policy.Principal, string, error) {
+	if s.policies == nil {
+		return policy.Principal{}, "", errors.New("credential store unavailable")
+	}
+	for _, token := range tokens {
+		if p, err := s.policies.Authenticate(ctx, token); err == nil {
+			return p, token, nil
+		}
+	}
+	return policy.Principal{}, "", errors.New("invalid operator credential")
 }
 
 func (s *Server) handleDownloadSkill(w http.ResponseWriter, r *http.Request) {

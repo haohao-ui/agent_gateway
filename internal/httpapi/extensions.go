@@ -188,14 +188,15 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 		p := operatorPrincipal(r)
 		ctx := policy.WithPrincipal(r.Context(), p)
 		if r.Method == http.MethodGet {
-			lease, err := s.openStream(ctx, p.ID, extractOperatorToken(r))
+			credential := operatorCredential(r)
+			lease, err := s.openStream(ctx, p.ID, credential)
 			if err != nil {
 				writeError(w, 429, "stream_limit", "too many streams")
 				return
 			}
 			defer lease.close()
 			ctx = lease.ctx
-			w = &authenticatedStreamWriter{ResponseWriter: w, server: s, token: extractOperatorToken(r), ctx: ctx}
+			w = &authenticatedStreamWriter{ResponseWriter: w, server: s, token: credential, ctx: ctx}
 		}
 		s.mcpHandler.ServeHTTP(w, r.WithContext(ctx))
 	})(w, r)

@@ -333,3 +333,89 @@ func TestH6ReleaseEndpointConfinedToDistributionFiles(t *testing.T) {
 		t.Fatal("symlink escaped distribution root")
 	}
 }
+
+// A browser keeps credentials per origin, so it can hold a token minted by a
+// previous instance at the same address. The console sent it as
+// Authorization: Bearer, and an invalid header used to win over a valid session
+// cookie: a correct password logged in and was immediately bounced back to the
+// login form. The usable credential must win instead.
+func TestStaleBearerDoesNotShadowValidSession(t *testing.T) {
+	s, ts, _ := secureFixture(t)
+	s.SetAdminCredentials("test-password", issueRole(t, s, policy.Admin))
+	res, err := ts.Client().Post(ts.URL+"/api/login", "application/json", strings.NewReader(`{"username":"admin","password":"test-password"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != 200 || len(res.Cookies()) != 1 {
+		t.Fatalf("login status %d cookies %d", res.StatusCode, len(res.Cookies()))
+	}
+	session := res.Cookies()[0]
+
+	for _, path := range []string{"/v1/operator/tasks", "/v1/operator/credentials", "/v1/events/stream"} {
+		req, _ := http.NewRequest("GET", ts.URL+path, nil)
+		req.AddCookie(session)
+		req.Header.Set("Authorization", "Bearer stale-token-from-an-old-instance")
+		res, err := ts.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		if res.StatusCode != 200 {
+			t.Fatalf("%s rejected a valid session because of a stale header: %d", path, res.StatusCode)
+		}
+	}
+
+	// Alone, the same stale header is still the only credential and must fail.
+	req, _ := http.NewRequest("GET", ts.URL+"/v1/operator/tasks", nil)
+	req.Header.Set("Authorization", "Bearer stale-token-from-an-old-instance")
+	res, err = ts.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != 401 {
+		t.Fatalf("stale credential accepted: %d", res.StatusCode)
+	}
+	// No credential at all stays a distinct 401.
+	res, err = ts.Client().Get(ts.URL + "/v1/operator/tasks")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != 401 {
+		t.Fatalf("unauthenticated call: %d", res.StatusCode)
+	}
+}
+
+// Console URLs used to carry ?token=, so old bookmarks still have one. The
+// navigation must land on the console without the parameter; API and MCP paths
+// keep rejecting query credentials.
+func TestConsoleQueryTokenRedirects(t *testing.T) {
+	_, ts, _ := secureFixture(t)
+	client := ts.Client()
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	for _, path := range []string{"/ui/?token=legacy", "/ui/index.html?token=legacy", "/?token=legacy"} {
+		res, err := client.Get(ts.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		if res.StatusCode != http.StatusFound {
+			t.Fatalf("%s: status %d", path, res.StatusCode)
+		}
+		if location := res.Header.Get("Location"); location == "" || strings.Contains(location, "token") {
+			t.Fatalf("%s: location %q", path, location)
+		}
+	}
+	for _, path := range []string{"/mcp?token=legacy", "/v1/operator/tasks?token=legacy", "/v1/events/stream?token=legacy"} {
+		res, err := client.Get(ts.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		if res.StatusCode != 400 {
+			t.Fatalf("%s: status %d", path, res.StatusCode)
+		}
+	}
+}

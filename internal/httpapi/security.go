@@ -59,28 +59,40 @@ func (s *Server) authorizeDevice(w http.ResponseWriter, r *http.Request, id stri
 
 const principalContextKey contextKey = "principal"
 
+// credentialContextKey carries the credential that authenticated the principal
+// so streaming handlers re-validate the same one instead of re-parsing headers.
+const credentialContextKey contextKey = "credential"
+
 func (s *Server) requireOperator(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.TLS == nil || s.policies == nil {
 			writeError(w, 401, "unauthorized", "HTTPS operator authentication required")
 			return
 		}
-		token := extractOperatorToken(r)
-		if token == "" {
+		tokens := operatorTokens(r)
+		if len(tokens) == 0 {
 			writeError(w, 401, "unauthorized", "operator credential required")
 			return
 		}
-		p, err := s.policies.Authenticate(r.Context(), token)
+		p, credential, err := s.authenticateOperator(r.Context(), tokens)
 		if err != nil {
 			writeError(w, 401, "unauthorized", "invalid operator credential")
 			return
 		}
-		next(w, r.WithContext(context.WithValue(r.Context(), principalContextKey, p)))
+		ctx := context.WithValue(r.Context(), principalContextKey, p)
+		ctx = context.WithValue(ctx, credentialContextKey, credential)
+		next(w, r.WithContext(ctx))
 	}
 }
 func operatorPrincipal(r *http.Request) policy.Principal {
 	p, _ := r.Context().Value(principalContextKey).(policy.Principal)
 	return p
+}
+
+// operatorCredential returns the credential that authenticated the request.
+func operatorCredential(r *http.Request) string {
+	c, _ := r.Context().Value(credentialContextKey).(string)
+	return c
 }
 func (s *Server) registerOperatorRoutes() {
 	s.mux.HandleFunc("GET /v1/operator/credentials", s.requireOperator(s.listCredentials))

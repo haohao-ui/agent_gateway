@@ -20,8 +20,12 @@ func (s *Server) handleSSEStreams(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 401, "unauthorized", "HTTPS operator authentication required")
 		return
 	}
-	token := extractOperatorToken(r)
-	currentPrincipal, err := s.policies.Authenticate(r.Context(), token)
+	tokens := operatorTokens(r)
+	if len(tokens) == 0 {
+		writeError(w, 401, "unauthorized", "operator credential required")
+		return
+	}
+	currentPrincipal, token, err := s.authenticateOperator(r.Context(), tokens)
 	if err != nil {
 		writeError(w, 401, "unauthorized", "invalid operator credential")
 		return

@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -290,6 +291,13 @@ func (s *Server) Handler() http.Handler {
 			return
 		}
 		if r.URL.Query().Has("token") {
+			// Console pages used to accept ?token= URLs, so old bookmarks still
+			// carry one. Drop the parameter and keep the page reachable instead
+			// of failing the navigation with a JSON error.
+			if path, ok := consolePath(r); ok {
+				http.Redirect(w, r, path, http.StatusFound)
+				return
+			}
 			writeError(w, 400, "query_token_forbidden", "use Authorization: Bearer or a secure session cookie")
 			return
 		}
@@ -304,6 +312,27 @@ func (s *Server) Handler() http.Handler {
 		}
 		s.mux.ServeHTTP(w, r)
 	})
+}
+
+// consolePath reports the console navigation target for a legacy ?token= URL:
+// the console entry point or one of its embedded assets. Anything else keeps the
+// stricter query-credential rejection.
+func consolePath(r *http.Request) (string, bool) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		return "", false
+	}
+	switch {
+	case r.URL.Path == "/", r.URL.Path == "/ui", r.URL.Path == "/ui/", strings.HasPrefix(r.URL.Path, "/ui/"):
+	default:
+		return "", false
+	}
+	query := r.URL.Query()
+	query.Del("token")
+	target := r.URL.Path
+	if encoded := query.Encode(); encoded != "" {
+		target += "?" + encoded
+	}
+	return target, true
 }
 
 // BuildTLSConfig returns a tls.Config with ALPN h2, server certificates, and mTLS verification.
