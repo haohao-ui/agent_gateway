@@ -1,0 +1,74 @@
+# 持续集成：编译、静态检查、测试与跨平台构建冒烟。
+#
+# 该工作流只读仓库内容，不产生任何发布产物，也不会修改仓库状态。
+# 发布正式版由 release.yml 负责。
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: build / vet / test / gofmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # go.mod 声明 go 1.27.1。这里装 stable 并依赖默认的 GOTOOLCHAIN=auto：
+      # 若 stable 低于 go.mod 要求，Go 会自动补齐所需工具链，
+      # 因此不会因为 setup-go 找不到精确补丁版本而失败。
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          check-latest: true
+
+      - name: go build
+        run: go build ./...
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test ./...
+
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l $(git ls-files '*.go'))"
+          if [ -n "$unformatted" ]; then
+            echo "::error::以下文件未通过 gofmt，请本地运行 gofmt -w 后提交："
+            echo "$unformatted"
+            exit 1
+          fi
+
+  cross-build:
+    name: cross build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: darwin, goarch: arm64 }
+          - { goos: darwin, goarch: amd64 }
+          - { goos: linux, goarch: amd64 }
+          - { goos: linux, goarch: arm64 }
+          - { goos: windows, goarch: amd64 }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: build
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: go build -trimpath -o /dev/null ./cmd/mesh

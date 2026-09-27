@@ -1,0 +1,206 @@
+# 发布正式版。
+#
+# 触发方式：
+#   1) 推送 tag：git tag -a v0.1.2 -m "Agent Gateway v0.1.2" && git push origin v0.1.2
+#   2) 或在 Actions 页面手动运行并填写已存在的 tag
+#
+# 产出（全部挂到 GitHub Release）：
+#   - mesh-<os>-<arch>[.exe]                  裸二进制，命名与网关自带
+#                                             /download/mesh?arch= 端点期望的 dist/ 一致
+#   - agent-gateway_<ver>_<os>_<arch>.tar.gz  归档（含 mesh、LICENSE、README.md）
+#   - agent-gateway_<ver>_windows_amd64.zip   同上，Windows 用 zip
+#   - SHA256SUMS                              所有资产的校验和
+#   - install.sh / install.ps1                一键安装脚本，供 releases/latest/download/ 引用
+#
+# 版本号来源：tag 去掉前缀 v，注入 protocol.Version；同时注入 commit 与构建时间。
+#
+# 维护者流程：
+#   1. 确认 main 上 CI 全绿；
+#   2. 打 tag 并推送，等待本工作流完成；
+#   3. 核对 Release 资产数量与 SHA256SUMS（sha256sum -c）；
+#   4. 回滚：gh release delete <tag> --cleanup-tag 删除发布与 tag。
+#      注意已下载到用户机器上的版本无法收回，回滚必须配合新版本重新发布。
+#
+# 重复运行同一 tag 不会失败：已存在的 Release 会改为 --clobber 覆盖上传资产。
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要发布的 tag，形如 v0.1.1（必须已存在）"
+        required: true
+        type: string
+
+# 仓库默认 workflow 权限为 read，创建 Release 需要显式申请写权限。
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: darwin, goarch: arm64, ext: "", format: tar.gz }
+          - { goos: darwin, goarch: amd64, ext: "", format: tar.gz }
+          - { goos: linux, goarch: amd64, ext: "", format: tar.gz }
+          - { goos: linux, goarch: arm64, ext: "", format: tar.gz }
+          - { goos: windows, goarch: amd64, ext: ".exe", format: zip }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          check-latest: true
+
+      - name: Resolve tag and version
+        id: meta
+        run: |
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          case "$tag" in
+            v*) ;;
+            *) echo "::error::tag 必须以 v 开头，当前为：$tag"; exit 1 ;;
+          esac
+          version="${tag#v}"
+          asset="mesh-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}"
+          archive="agent-gateway_${version}_${{ matrix.goos }}_${{ matrix.goarch }}.${{ matrix.format }}"
+          {
+            echo "tag=$tag"
+            echo "version=$version"
+            echo "asset=$asset"
+            echo "archive=$archive"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          mkdir -p dist
+          go build -trimpath \
+            -ldflags "-s -w \
+              -X agent-gateway/internal/protocol.Version=${{ steps.meta.outputs.version }} \
+              -X agent-gateway/internal/protocol.GitCommit=${GITHUB_SHA} \
+              -X agent-gateway/internal/protocol.BuildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            -o "dist/${{ steps.meta.outputs.asset }}" ./cmd/mesh
+          ls -lh "dist/${{ steps.meta.outputs.asset }}"
+
+      - name: Smoke check version injection
+        run: |
+          # 只有与运行器同平台的产物可执行；其余平台用字符串检查注入结果。
+          binary="dist/${{ steps.meta.outputs.asset }}"
+          if [ "${{ matrix.goos }}" = "linux" ] && [ "${{ matrix.goarch }}" = "amd64" ]; then
+            out="$("$binary" --version)"
+            echo "$out"
+            case "$out" in
+              *"${{ steps.meta.outputs.version }}"*) ;;
+              *) echo "::error::版本注入失败：$out"; exit 1 ;;
+            esac
+          else
+            grep -aq "${{ steps.meta.outputs.version }}" "$binary" \
+              || { echo "::error::产物中未找到版本号 ${{ steps.meta.outputs.version }}"; exit 1; }
+          fi
+
+      - name: Package archive
+        run: |
+          cd dist
+          cp ../LICENSE ../README.md .
+          if [ "${{ matrix.format }}" = "zip" ]; then
+            zip -q "${{ steps.meta.outputs.archive }}" \
+              "${{ steps.meta.outputs.asset }}" LICENSE README.md
+          else
+            cp "${{ steps.meta.outputs.asset }}" mesh
+            tar -czf "${{ steps.meta.outputs.archive }}" mesh LICENSE README.md
+            rm -f mesh
+          fi
+          ls -lh "${{ steps.meta.outputs.asset }}" "${{ steps.meta.outputs.archive }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.goos }}-${{ matrix.goarch }}
+          if-no-files-found: error
+          path: |
+            dist/${{ steps.meta.outputs.asset }}
+            dist/${{ steps.meta.outputs.archive }}
+
+  release:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+
+      - name: Resolve tag
+        id: meta
+        run: |
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Attach installers
+        run: cp install.sh install.ps1 assets/
+
+      - name: Checksums
+        run: |
+          cd assets
+          # 显式列出资产：既避免 sha256sum 写出 "./" 前缀（安装脚本按裸文件名匹配），
+          # 也避免重跑时把 SHA256SUMS 自身计入。
+          sha256sum mesh-* agent-gateway_* install.sh install.ps1 > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Compose release notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${{ steps.meta.outputs.tag }}"
+          gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+            -f tag_name="$tag" \
+            -f target_commitish="${GITHUB_SHA}" \
+            --jq .body > auto-notes.md 2>/dev/null || : > auto-notes.md
+          {
+            echo "开发阶段版本，不声明 production ready。安装与使用见 [docs/INSTALL.md](docs/INSTALL.md)、[docs/USAGE.md](docs/USAGE.md)。"
+            echo
+            echo "### 一键安装网关"
+            echo
+            echo '```sh'
+            echo "curl -fsSL https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/install.sh | sh"
+            echo '```'
+            echo
+            echo "安装到 \`~/.local/bin\`，校验 SHA-256，不自动注册后台服务。指定版本：追加 \`-s -- --version ${tag}\`。"
+            echo
+            if [ -s auto-notes.md ]; then
+              echo "---"
+              echo
+              cat auto-notes.md
+            fi
+          } > notes.md
+          head -20 notes.md
+
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${{ steps.meta.outputs.tag }}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag 已存在，改为覆盖上传资产"
+            gh release upload "$tag" assets/* --clobber
+          else
+            gh release create "$tag" \
+              --title "Agent Gateway $tag" \
+              --notes-file notes.md \
+              --verify-tag \
+              assets/*
+          fi

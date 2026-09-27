@@ -24,7 +24,43 @@
 
 ## 2. 获取程序
 
-### 方式一：从网关一键安装（节点推荐，无需 Go）
+### 方式一：从 GitHub Release 一键安装（网关主机推荐）
+
+从项目发布页下载对应平台的二进制并校验 SHA-256 后安装到 `~/.local/bin`：
+
+```sh
+curl -fsSL https://github.com/haohao-ui/agent_gateway/releases/latest/download/install.sh | sh
+```
+
+指定版本或安装目录：
+
+```sh
+# 指定版本
+curl -fsSL https://github.com/haohao-ui/agent_gateway/releases/latest/download/install.sh | sh -s -- --version v0.1.1
+
+# 指定安装目录
+curl -fsSL https://github.com/haohao-ui/agent_gateway/releases/latest/download/install.sh | sh -s -- --dir "$HOME/bin"
+```
+
+脚本行为：
+
+1. 按 `uname` 探测平台（darwin / linux，amd64 / arm64）；
+2. 下载 `mesh-<os>-<arch>` 与 `SHA256SUMS`；
+3. 校验 SHA-256，**不通过立即终止**；获取不到校验和时默认也终止（`--skip-verify` 可跳过，不建议）；
+4. 安装到 `~/.local/bin/mesh`（已存在则先备份为 `mesh.bak`）；
+5. 执行 `mesh --version` 验证，并输出后续命令与 PATH 提示。
+
+脚本**不会**修改 shell 配置，也**不会**自动注册后台服务。可用环境变量代替参数：`AGENT_GATEWAY_VERSION`、`AGENT_GATEWAY_INSTALL_DIR`、`AGENT_GATEWAY_REPO`、`AGENT_GATEWAY_BASE_URL`（镜像站）。
+
+Windows 使用 PowerShell 脚本，安装到 `$HOME\.local\bin\mesh.exe`：
+
+```powershell
+irm https://github.com/haohao-ui/agent_gateway/releases/latest/download/install.ps1 | iex
+```
+
+发布页同时提供带有 `LICENSE` 与 `README.md` 的归档包（`agent-gateway_<版本>_<os>_<arch>.tar.gz` 或 `.zip`）以及裸二进制（`mesh-<os>-<arch>[.exe]`），可手动下载解压使用。
+
+### 方式二：从网关一键安装节点（节点推荐，无需 Go）
 
 网关启动后自带安装脚本与二进制分发端点。在目标机器上执行：
 
@@ -49,7 +85,7 @@ Windows 节点使用 PowerShell 脚本：
 irm https://<网关地址>:8443/download/install.ps1 | iex
 ```
 
-### 方式二：从源码构建（服务端）
+### 方式三：从源码构建（服务端）
 
 ```sh
 git clone https://github.com/haohao-ui/agent_gateway.git

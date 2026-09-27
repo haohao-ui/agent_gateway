@@ -320,4 +320,3 @@ func TestMCPServer_RoleScopeAuthorization(t *testing.T) {
 		t.Errorf("viewer should be denied to read node-B outside its scope")
 	}
 }
-

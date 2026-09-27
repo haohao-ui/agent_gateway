@@ -10,7 +10,21 @@
 
 ## 快速开始
 
-**1. 构建网关**
+**1. 安装网关**
+
+一键安装（macOS / Linux，校验 SHA-256，装到 `~/.local/bin`）：
+
+```sh
+curl -fsSL https://github.com/haohao-ui/agent_gateway/releases/latest/download/install.sh | sh
+```
+
+Windows：
+
+```powershell
+irm https://github.com/haohao-ui/agent_gateway/releases/latest/download/install.ps1 | iex
+```
+
+或从源码构建：
 
 ```sh
 go build -o bin/mesh ./cmd/mesh
@@ -19,7 +33,7 @@ go build -o bin/mesh ./cmd/mesh
 **2. 启动网关**
 
 ```sh
-./bin/mesh server
+mesh server
 ```
 
 终端会打印 Web 控制台地址与登录账号、配对邀请令牌、CA 证书指纹。首次启动自动生成 CA、证书与数据库。

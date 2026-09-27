@@ -67,4 +67,3 @@ func TestPopulateDefaultCapabilities_ShellRestriction(t *testing.T) {
 		t.Errorf("expected shell capability when AllowShell is enabled")
 	}
 }
-

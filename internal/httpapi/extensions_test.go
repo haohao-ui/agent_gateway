@@ -204,5 +204,3 @@ func TestDownloadMeshSHA256(t *testing.T) {
 		t.Errorf("expected 64-char sha256 hex string, got: %s", string(body))
 	}
 }
-
-
