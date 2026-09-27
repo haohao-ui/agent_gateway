@@ -244,6 +244,11 @@ func (c *CA) GenerateInvitation(ttl time.Duration) (protocol.PairInvitation, err
 	return c.invitations.Issue(ttl, c.fingerprint)
 }
 
+// GenerateInvitationWithUses creates an invitation token with custom usage limits.
+func (c *CA) GenerateInvitationWithUses(ttl time.Duration, maxUses int) (protocol.PairInvitation, error) {
+	return c.invitations.IssueWithUses(ttl, maxUses, c.fingerprint)
+}
+
 // PendingInvitations counts invitations that can still be used.
 func (c *CA) PendingInvitations() (int, error) {
 	return c.invitations.Pending()

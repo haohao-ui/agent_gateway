@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	"agent-gateway/internal/policy"
 	official "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -15,6 +16,14 @@ const (
 	ServerName    = "agent-gateway"
 	ServerVersion = "0.1.0"
 )
+
+func authorizeNodeAction(ctx context.Context, action string, nodeID string) error {
+	p, ok := policy.PrincipalFromContext(ctx)
+	if !ok {
+		return nil
+	}
+	return policy.Authorize(p, action, nodeID)
+}
 
 // NewServer builds an official MCP server configured with agent-gateway tools.
 func NewServer(backend GatewayBackend) *official.Server {
@@ -53,6 +62,10 @@ func NewSSEHandler(backend GatewayBackend) http.Handler {
 func registerTools(s *official.Server, backend GatewayBackend) {
 	// 1. task_submit / submit_task handler
 	submitHandler := func(ctx context.Context, req *official.CallToolRequest, in SubmitTaskInput) (*official.CallToolResult, SubmitTaskOutput, error) {
+		if err := authorizeNodeAction(ctx, policy.ActionTaskSubmit, in.NodeID); err != nil {
+			return nil, SubmitTaskOutput{}, fmt.Errorf("authorization denied: %w", err)
+		}
+
 		capability := in.Capability
 		if capability == "" {
 			capability = "agent.run"
@@ -99,6 +112,9 @@ func registerTools(s *official.Server, backend GatewayBackend) {
 		if err != nil {
 			return nil, GetTaskOutput{}, fmt.Errorf("get task failed: %w", err)
 		}
+		if err := authorizeNodeAction(ctx, policy.ActionTaskRead, task.NodeID); err != nil {
+			return nil, GetTaskOutput{}, fmt.Errorf("authorization denied: %w", err)
+		}
 
 		out := GetTaskOutput{
 			TaskID:    task.ID,
@@ -133,9 +149,18 @@ func registerTools(s *official.Server, backend GatewayBackend) {
 		if in.TimeoutSeconds <= 0 {
 			timeout = 30 * time.Second
 		}
+		initialTask, err := backend.GetTask(ctx, in.TaskID)
+		if err == nil {
+			if err := authorizeNodeAction(ctx, policy.ActionTaskRead, initialTask.NodeID); err != nil {
+				return nil, GetTaskOutput{}, fmt.Errorf("authorization denied: %w", err)
+			}
+		}
 		task, err := backend.WaitTask(ctx, in.TaskID, timeout)
 		if err != nil {
 			return nil, GetTaskOutput{}, fmt.Errorf("wait task failed: %w", err)
+		}
+		if err := authorizeNodeAction(ctx, policy.ActionTaskRead, task.NodeID); err != nil {
+			return nil, GetTaskOutput{}, fmt.Errorf("authorization denied: %w", err)
 		}
 
 		out := GetTaskOutput{
@@ -154,6 +179,71 @@ func registerTools(s *official.Server, backend GatewayBackend) {
 		return nil, out, nil
 	})
 
+	// 3b. node_execute / execute_on_node (all-in-one command execution)
+	executeHandler := func(ctx context.Context, req *official.CallToolRequest, in NodeExecuteInput) (*official.CallToolResult, NodeExecuteOutput, error) {
+		if err := authorizeNodeAction(ctx, policy.ActionTaskSubmit, in.NodeID); err != nil {
+			return nil, NodeExecuteOutput{}, fmt.Errorf("authorization denied: %w", err)
+		}
+
+		capability := in.Capability
+		if capability == "" {
+			capability = "bash"
+		}
+		timeout := in.TimeoutSeconds
+		if timeout <= 0 {
+			timeout = 60
+		}
+		if timeout > 300 {
+			timeout = 300
+		}
+
+		rawInput, _ := json.Marshal(map[string]string{
+			"instruction": in.Command,
+			"prompt":      in.Command,
+		})
+
+		task, err := backend.SubmitTask(ctx, in.NodeID, capability, rawInput, timeout)
+		if err != nil {
+			if capability == "bash" {
+				task, err = backend.SubmitTask(ctx, in.NodeID, "agent.run", rawInput, timeout)
+			}
+			if err != nil {
+				return nil, NodeExecuteOutput{}, fmt.Errorf("submit task to node %s failed: %w", in.NodeID, err)
+			}
+		}
+
+		waitTimeout := time.Duration(timeout) * time.Second
+		finishedTask, err := backend.WaitTask(ctx, task.ID, waitTimeout)
+		if err != nil {
+			return nil, NodeExecuteOutput{
+				TaskID: task.ID,
+				NodeID: task.NodeID,
+				State:  string(task.State),
+				Error:  fmt.Sprintf("wait task failed: %v", err),
+			}, nil
+		}
+
+		out := NodeExecuteOutput{
+			TaskID: finishedTask.ID,
+			NodeID: finishedTask.NodeID,
+			State:  string(finishedTask.State),
+		}
+		if finishedTask.Result != nil {
+			out.Output = finishedTask.Result.Text
+			out.ExitCode = finishedTask.Result.ExitCode
+			out.Error = finishedTask.Result.ErrorCode
+		}
+		return nil, out, nil
+	}
+	official.AddTool(s, &official.Tool{
+		Name:        "node_execute",
+		Description: "All-in-one tool: submit a command to a remote worker node, wait for completion, and directly return output and exit code.",
+	}, executeHandler)
+	official.AddTool(s, &official.Tool{
+		Name:        "execute_on_node",
+		Description: "Alias for node_execute. Execute a command on a remote worker node and synchronously return result.",
+	}, executeHandler)
+
 	// 4. handoff_to_computer_agent
 	official.AddTool(s, &official.Tool{
 		Name:        "handoff_to_computer_agent",
@@ -167,13 +257,19 @@ func registerTools(s *official.Server, backend GatewayBackend) {
 			}
 			for _, d := range devices {
 				if !d.Revoked && time.Now().Before(d.ExpiresAt) {
-					target = d.NodeID
-					break
+					if authorizeNodeAction(ctx, policy.ActionTaskSubmit, d.NodeID) == nil {
+						target = d.NodeID
+						break
+					}
 				}
 			}
 			if target == "" {
-				return nil, SubmitTaskOutput{}, errors.New("no authorized active worker node found on the mesh")
+				return nil, SubmitTaskOutput{}, errors.New("no authorized active worker node found on the mesh for this principal")
 			}
+		}
+
+		if err := authorizeNodeAction(ctx, policy.ActionTaskSubmit, target); err != nil {
+			return nil, SubmitTaskOutput{}, fmt.Errorf("authorization denied: %w", err)
 		}
 
 		capability := in.Agent
@@ -211,7 +307,15 @@ func registerTools(s *official.Server, backend GatewayBackend) {
 
 	// 5. task_cancel / cancel_task handler
 	cancelHandler := func(ctx context.Context, req *official.CallToolRequest, in CancelTaskInput) (*official.CallToolResult, CancelTaskOutput, error) {
-		task, err := backend.CancelTask(ctx, in.TaskID)
+		task, err := backend.GetTask(ctx, in.TaskID)
+		if err != nil {
+			return nil, CancelTaskOutput{}, fmt.Errorf("cancel task failed: %w", err)
+		}
+		if err := authorizeNodeAction(ctx, policy.ActionTaskCancel, task.NodeID); err != nil {
+			return nil, CancelTaskOutput{}, fmt.Errorf("authorization denied: %w", err)
+		}
+
+		task, err = backend.CancelTask(ctx, in.TaskID)
 		if err != nil {
 			return nil, CancelTaskOutput{}, fmt.Errorf("cancel task failed: %w", err)
 		}
@@ -234,9 +338,20 @@ func registerTools(s *official.Server, backend GatewayBackend) {
 
 	// 6. device_list / list_devices handler
 	deviceListHandler := func(ctx context.Context, req *official.CallToolRequest, in ListDevicesInput) (*official.CallToolResult, ListDevicesOutput, error) {
+		p, hasPrincipal := policy.PrincipalFromContext(ctx)
+
 		if detailed, ok := backend.(DetailedDeviceProvider); ok {
 			items, err := detailed.ListDetailedDevices(ctx)
 			if err == nil {
+				if hasPrincipal && p.Role != policy.Admin {
+					var filtered []DeviceItem
+					for _, item := range items {
+						if policy.Authorize(p, policy.ActionTaskRead, item.NodeID) == nil {
+							filtered = append(filtered, item)
+						}
+					}
+					return nil, ListDevicesOutput{Devices: filtered}, nil
+				}
 				return nil, ListDevicesOutput{Devices: items}, nil
 			}
 		}
@@ -247,6 +362,11 @@ func registerTools(s *official.Server, backend GatewayBackend) {
 
 		var items []DeviceItem
 		for _, d := range devices {
+			if hasPrincipal && p.Role != policy.Admin {
+				if err := policy.Authorize(p, policy.ActionTaskRead, d.NodeID); err != nil {
+					continue
+				}
+			}
 			items = append(items, DeviceItem{
 				NodeID:      d.NodeID,
 				Fingerprint: d.Fingerprint,
@@ -270,6 +390,10 @@ func registerTools(s *official.Server, backend GatewayBackend) {
 		Name:        "doctor_diagnose",
 		Description: "Run environmental and database health checks for the gateway and worker environment.",
 	}, func(ctx context.Context, req *official.CallToolRequest, in DiagnoseInput) (*official.CallToolResult, DiagnoseOutput, error) {
+		if p, ok := policy.PrincipalFromContext(ctx); ok && p.Role != policy.Admin {
+			return nil, DiagnoseOutput{}, errors.New("authorization denied: diagnostic tools require admin role")
+		}
+
 		rep, err := backend.Diagnose(ctx)
 		if err != nil {
 			return nil, DiagnoseOutput{}, fmt.Errorf("diagnostics failed: %w", err)

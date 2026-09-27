@@ -92,11 +92,11 @@ func taskClient(ctx context.Context, nodeDir, serverOverride string) (*node.Gate
 
 func runTaskSubmit(ctx context.Context, args []string) error {
 	cmd := newCommand("task submit", "Queue a task for the machine in --node-dir.")
-	nodeDir := cmd.flags.String("node-dir", "./node", "directory holding the machine identity")
-	server := cmd.flags.String("server", "", "override the gateway URL recorded at pairing time")
-	tokenFile := cmd.flags.String("token-file", "", "operator credential file; requires --server and --ca")
-	caFile := cmd.flags.String("ca", "", "trusted gateway CA file")
-	nodeID := cmd.flags.String("node-id", "", "target node for operator submission")
+	nodeDir := cmd.flags.String("node-dir", envString("MESH_NODE_DIR", "./node"), "directory holding the machine identity")
+	server := cmd.flags.String("server", envOrDefault([]string{"MESH_SERVER_URL", "MESH_SERVER"}, ""), "override the gateway URL recorded at pairing time")
+	tokenFile := cmd.flags.String("token-file", envString("MESH_TOKEN_FILE", ""), "operator credential file; requires --server and --ca")
+	caFile := cmd.flags.String("ca", envOrDefault([]string{"MESH_CA_FILE", "MESH_CA"}, ""), "trusted gateway CA file")
+	nodeID := cmd.flags.String("node-id", envString("MESH_NODE_ID", ""), "target node for operator submission")
 	capability := cmd.flags.String("capability", "agent.run", "capability name")
 	version := cmd.flags.Int("capability-version", 1, "capability version")
 	input := cmd.flags.String("input", "", "capability input as JSON, for example '{\"prompt\":\"hi\"}'")
@@ -144,10 +144,10 @@ func runTaskSubmit(ctx context.Context, args []string) error {
 
 func runTaskGet(ctx context.Context, args []string) error {
 	cmd := newCommand("task get", "Show one task owned by the machine in --node-dir.")
-	nodeDir := cmd.flags.String("node-dir", "./node", "directory holding the machine identity")
-	server := cmd.flags.String("server", "", "override the gateway URL recorded at pairing time")
-	tokenFile := cmd.flags.String("token-file", "", "operator credential file; requires --server and --ca")
-	caFile := cmd.flags.String("ca", "", "trusted gateway CA file")
+	nodeDir := cmd.flags.String("node-dir", envString("MESH_NODE_DIR", "./node"), "directory holding the machine identity")
+	server := cmd.flags.String("server", envOrDefault([]string{"MESH_SERVER_URL", "MESH_SERVER"}, ""), "override the gateway URL recorded at pairing time")
+	tokenFile := cmd.flags.String("token-file", envString("MESH_TOKEN_FILE", ""), "operator credential file; requires --server and --ca")
+	caFile := cmd.flags.String("ca", envOrDefault([]string{"MESH_CA_FILE", "MESH_CA"}, ""), "trusted gateway CA file")
 	if err := cmd.flags.Parse(args); err != nil {
 		return err
 	}
@@ -176,10 +176,10 @@ func runTaskGet(ctx context.Context, args []string) error {
 
 func runTaskCancel(ctx context.Context, args []string) error {
 	cmd := newCommand("task cancel", "Ask for a task owned by the machine in --node-dir to stop.")
-	nodeDir := cmd.flags.String("node-dir", "./node", "directory holding the machine identity")
-	server := cmd.flags.String("server", "", "override the gateway URL recorded at pairing time")
-	tokenFile := cmd.flags.String("token-file", "", "operator credential file; requires --server and --ca")
-	caFile := cmd.flags.String("ca", "", "trusted gateway CA file")
+	nodeDir := cmd.flags.String("node-dir", envString("MESH_NODE_DIR", "./node"), "directory holding the machine identity")
+	server := cmd.flags.String("server", envOrDefault([]string{"MESH_SERVER_URL", "MESH_SERVER"}, ""), "override the gateway URL recorded at pairing time")
+	tokenFile := cmd.flags.String("token-file", envString("MESH_TOKEN_FILE", ""), "operator credential file; requires --server and --ca")
+	caFile := cmd.flags.String("ca", envOrDefault([]string{"MESH_CA_FILE", "MESH_CA"}, ""), "trusted gateway CA file")
 	if err := cmd.flags.Parse(args); err != nil {
 		return err
 	}
@@ -230,9 +230,9 @@ func rejectNodeIdentity(cmd *command) error {
 
 func runTaskRequeue(ctx context.Context, args []string) error {
 	cmd := newCommand("task requeue", "Requeue a task parked in unknown state back to queued (operator only).")
-	server := cmd.flags.String("server", "", "gateway HTTPS URL")
-	tokenFile := cmd.flags.String("token-file", "", "operator credential file")
-	caFile := cmd.flags.String("ca", "", "trusted gateway CA file")
+	server := cmd.flags.String("server", envOrDefault([]string{"MESH_SERVER_URL", "MESH_SERVER"}, ""), "gateway HTTPS URL")
+	tokenFile := cmd.flags.String("token-file", envString("MESH_TOKEN_FILE", ""), "operator credential file")
+	caFile := cmd.flags.String("ca", envOrDefault([]string{"MESH_CA_FILE", "MESH_CA"}, ""), "trusted gateway CA file")
 	if err := cmd.flags.Parse(args); err != nil {
 		return err
 	}
@@ -247,9 +247,9 @@ func runTaskRequeue(ctx context.Context, args []string) error {
 
 func runTaskResolve(ctx context.Context, args []string) error {
 	cmd := newCommand("task resolve", "Resolve a task parked in unknown state as failed or cancelled (operator only).")
-	server := cmd.flags.String("server", "", "gateway HTTPS URL")
-	tokenFile := cmd.flags.String("token-file", "", "operator credential file")
-	caFile := cmd.flags.String("ca", "", "trusted gateway CA file")
+	server := cmd.flags.String("server", envOrDefault([]string{"MESH_SERVER_URL", "MESH_SERVER"}, ""), "gateway HTTPS URL")
+	tokenFile := cmd.flags.String("token-file", envString("MESH_TOKEN_FILE", ""), "operator credential file")
+	caFile := cmd.flags.String("ca", envOrDefault([]string{"MESH_CA_FILE", "MESH_CA"}, ""), "trusted gateway CA file")
 	state := cmd.flags.String("state", "failed", "terminal state: failed or cancelled")
 	reason := cmd.flags.String("reason", "operator resolved unknown task", "rationale for terminal resolution")
 	if err := cmd.flags.Parse(args); err != nil {
@@ -272,9 +272,9 @@ func runTaskResolve(ctx context.Context, args []string) error {
 
 func runTaskList(ctx context.Context, args []string) error {
 	cmd := newCommand("task list", "List tasks (operator only).")
-	server := cmd.flags.String("server", "", "gateway HTTPS URL")
-	tokenFile := cmd.flags.String("token-file", "", "operator credential file")
-	caFile := cmd.flags.String("ca", "", "trusted gateway CA file")
+	server := cmd.flags.String("server", envOrDefault([]string{"MESH_SERVER_URL", "MESH_SERVER"}, ""), "gateway HTTPS URL")
+	tokenFile := cmd.flags.String("token-file", envString("MESH_TOKEN_FILE", ""), "operator credential file")
+	caFile := cmd.flags.String("ca", envOrDefault([]string{"MESH_CA_FILE", "MESH_CA"}, ""), "trusted gateway CA file")
 	state := cmd.flags.String("state", "unknown", "filter tasks by state (default unknown)")
 	if err := cmd.flags.Parse(args); err != nil {
 		return err

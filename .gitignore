@@ -8,3 +8,6 @@ dist/
 coverage.out
 /mesh
 *.exe
+.env
+gateway-data*/
+test-local-node/

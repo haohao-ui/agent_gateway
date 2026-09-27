@@ -84,6 +84,9 @@ func (o *Outbox) List() ([]OutboxEntry, error) {
 		}
 		raw, err := os.ReadFile(filepath.Join(o.dir, dirent.Name()))
 		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
 			return nil, fmt.Errorf("read outbox entry %s: %w", dirent.Name(), err)
 		}
 		var entry OutboxEntry

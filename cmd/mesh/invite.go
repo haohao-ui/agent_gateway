@@ -17,7 +17,7 @@ import (
 // invitation never needs the CA private key.
 func runInvite(ctx context.Context, args []string) error {
 	cmd := newCommand("invite", "Mint a pairing invitation for a gateway data directory. Works while the gateway is running.")
-	dataDir := cmd.flags.String("data-dir", "./gateway-data", "the gateway's data directory (the one passed to 'mesh server')")
+	dataDir := cmd.flags.String("data-dir", envString("MESH_DATA_DIR", "./gateway-data"), "the gateway's data directory (the one passed to 'mesh server')")
 	ttl := cmd.flags.Duration("ttl", defaultInviteTTL, "how long the invitation stays valid")
 	count := cmd.flags.Int("count", 1, "how many invitations to mint")
 	list := cmd.flags.Bool("list", false, "only report how many invitations are still usable")

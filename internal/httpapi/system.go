@@ -1,8 +1,11 @@
 package httpapi
 
 import (
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"io"
@@ -197,27 +200,37 @@ func (s *Server) handleSystemRestart(w http.ResponseWriter, r *http.Request) {
 	}()
 }
 
-// handleDownloadMesh serves the gateway/node binary for remote installations.
-func (s *Server) handleDownloadMesh(w http.ResponseWriter, r *http.Request) {
-	arch := r.URL.Query().Get("arch")
-	// If a specific architecture is requested and exists in dist directory, serve that
+func (s *Server) resolveMeshBinaryPath(arch, ua string) (string, string, error) {
+	isWindows := strings.Contains(arch, "windows") || strings.Contains(ua, "windows")
+
+	searchDirs := []string{}
 	if s.dataDir != "" {
-		if arch != "" {
-			candidate := filepath.Join(s.dataDir, "dist", fmt.Sprintf("mesh-%s", arch))
-			if _, err := os.Stat(candidate); err == nil {
-				w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"mesh-%s\"", arch))
-				http.ServeFile(w, r, candidate)
-				return
-			}
-		}
-		// If client User-Agent indicates Linux, prefer linux-amd64 if available
-		ua := strings.ToLower(r.UserAgent())
-		if strings.Contains(ua, "linux") {
-			candidate := filepath.Join(s.dataDir, "dist", "mesh-linux-amd64")
-			if _, err := os.Stat(candidate); err == nil {
-				w.Header().Set("Content-Disposition", "attachment; filename=\"mesh\"")
-				http.ServeFile(w, r, candidate)
-				return
+		searchDirs = append(searchDirs, filepath.Join(s.dataDir, "dist"))
+	}
+	searchDirs = append(searchDirs, "dist")
+	if execPath, err := os.Executable(); err == nil {
+		searchDirs = append(searchDirs, filepath.Join(filepath.Dir(execPath), "dist"))
+	}
+
+	var baseNames []string
+	if arch != "" {
+		baseNames = append(baseNames, fmt.Sprintf("mesh-%s.exe", arch), fmt.Sprintf("mesh-%s", arch))
+	}
+	if isWindows {
+		baseNames = append(baseNames, "mesh-windows-amd64.exe", "mesh-windows-amd64")
+	} else if strings.Contains(ua, "linux") {
+		baseNames = append(baseNames, "mesh-linux-amd64", "mesh-linux-arm64")
+	}
+
+	for _, d := range searchDirs {
+		for _, name := range baseNames {
+			candidate := filepath.Join(d, name)
+			if fi, err := os.Stat(candidate); err == nil && !fi.IsDir() {
+				outName := "mesh"
+				if isWindows || strings.HasSuffix(name, ".exe") {
+					outName = "mesh.exe"
+				}
+				return candidate, outName, nil
 			}
 		}
 	}
@@ -225,12 +238,63 @@ func (s *Server) handleDownloadMesh(w http.ResponseWriter, r *http.Request) {
 	// Default: serve currently running executable
 	execPath, err := os.Executable()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "binary not available: "+err.Error())
+		return "", "", fmt.Errorf("binary not available: %w", err)
+	}
+
+	outName := "mesh"
+	if isWindows {
+		outName = "mesh.exe"
+	}
+	return execPath, outName, nil
+}
+
+func fileSHA256(filePath string) (string, error) {
+	f, err := os.Open(filePath)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// handleDownloadMesh serves the gateway/node binary for remote installations.
+func (s *Server) handleDownloadMesh(w http.ResponseWriter, r *http.Request) {
+	arch := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("arch")))
+	ua := strings.ToLower(r.UserAgent())
+	candidate, outName, err := s.resolveMeshBinaryPath(arch, ua)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
 	}
 
-	w.Header().Set("Content-Disposition", "attachment; filename=\"mesh\"")
-	http.ServeFile(w, r, execPath)
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", outName))
+	http.ServeFile(w, r, candidate)
+}
+
+// handleDownloadMeshSHA256 serves the SHA-256 checksum of the target node binary for integrity verification.
+func (s *Server) handleDownloadMeshSHA256(w http.ResponseWriter, r *http.Request) {
+	arch := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("arch")))
+	ua := strings.ToLower(r.UserAgent())
+	candidate, outName, err := s.resolveMeshBinaryPath(arch, ua)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found", "binary not found: "+err.Error())
+		return
+	}
+
+	hash, err := fileSHA256(candidate)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "failed to compute sha256: "+err.Error())
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(fmt.Sprintf("%s  %s\n", hash, outName)))
 }
 
 // handleDownloadInstallScript serves the one-line bash installer for remote worker nodes.
@@ -294,7 +358,32 @@ echo "3. 下载 mesh 节点二进制程序..."
 curl -fsSL "$DOWNLOAD_URL/download/mesh?arch=${OS}-${ARCH}" -o mesh
 chmod +x mesh
 
-echo "4. 执行节点安全配对..."
+echo "4. 校验 mesh 程序完整性 (SHA-256 防篡改)..."
+EXPECTED_HASH=$(curl -fsSL "$DOWNLOAD_URL/download/mesh.sha256?arch=${OS}-${ARCH}" 2>/dev/null | awk '{print $1}' || true)
+if [ -n "$EXPECTED_HASH" ]; then
+    ACTUAL_HASH=""
+    if command -v sha256sum >/dev/null 2>&1; then
+        ACTUAL_HASH=$(sha256sum mesh | awk '{print $1}')
+    elif command -v shasum >/dev/null 2>&1; then
+        ACTUAL_HASH=$(shasum -a 256 mesh | awk '{print $1}')
+    fi
+
+    if [ -n "$ACTUAL_HASH" ]; then
+        if [ "$ACTUAL_HASH" != "$EXPECTED_HASH" ]; then
+            echo "❌ 二进制完整性校验失败！期望值: $EXPECTED_HASH，计算值: $ACTUAL_HASH" >&2
+            echo "疑似遭遇网络中间人篡改或文件损坏，终止安装并立即清除可执行程序！" >&2
+            rm -f mesh
+            exit 1
+        fi
+        echo "   ✅ SHA-256 完整性校验通过: ${ACTUAL_HASH}"
+    else
+        echo "   ⚠️ 未找到本地 sha256 工具，跳过本地计算"
+    fi
+else
+    echo "   ⚠️ 未能从网关获取校验值"
+fi
+
+echo "5. 执行节点安全配对..."
 ./mesh pair --server "$GATEWAY_TLS_URL" --ca ca.crt --token "$TOKEN" --dir "$DIR"
 
 echo "=========================================================="
@@ -308,6 +397,145 @@ echo "=========================================================="
 `, downloadURL, tlsURL)
 
 	w.Header().Set("Content-Type", "text/x-shellscript; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(script))
+}
+
+// handleDownloadInstallPowerShell serves the PowerShell one-line installer for Windows worker nodes.
+func (s *Server) handleDownloadInstallPowerShell(w http.ResponseWriter, r *http.Request) {
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	downloadURL := fmt.Sprintf("%s://%s", scheme, r.Host)
+
+	host := r.Host
+	if h, _, err := net.SplitHostPort(host); err == nil && h != "" {
+		host = h
+	}
+	tlsURL := fmt.Sprintf("https://%s:8443", host)
+	token := r.URL.Query().Get("token")
+
+	script := fmt.Sprintf(`param(
+    [Parameter(Position=0)]
+    [string]$Token = "%[3]s",
+
+    [Parameter(Position=1)]
+    [string]$Dir = "$HOME\.agent-mesh-node"
+)
+
+$ErrorActionPreference = "Stop"
+
+# Agent Mesh Node One-Line Auto Installer (PowerShell for Windows)
+# Assets Download URL: %[1]s
+# Gateway TLS Server:  %[2]s
+
+$DOWNLOAD_URL = "%[1]s"
+$GATEWAY_TLS_URL = "%[2]s"
+
+if (-not $Token -or $Token -eq "{{TOKEN}}") {
+    Write-Host "==========================================================" -ForegroundColor Red
+    Write-Host "❌ 缺少配对邀请码 (Invitation Token)" -ForegroundColor Red
+    Write-Host "用法:" -ForegroundColor Yellow
+    Write-Host "  irm ""$DOWNLOAD_URL/download/install.ps1?token=<邀请码>"" | iex" -ForegroundColor White
+    Write-Host "或:" -ForegroundColor Yellow
+    Write-Host "  & ([scriptblock]::Create((irm ""$DOWNLOAD_URL/download/install.ps1""))) -Token ""<邀请码>""" -ForegroundColor White
+    Write-Host "请在网关控制台获取一个有效的配对邀请码后重试。" -ForegroundColor Yellow
+    Write-Host "==========================================================" -ForegroundColor Red
+    Exit 1
+}
+
+Write-Host "==========================================================" -ForegroundColor Cyan
+Write-Host "🚀 开始安装 Agent Mesh Windows 节点工作进程..." -ForegroundColor Green
+Write-Host "下载端点: $DOWNLOAD_URL"
+Write-Host "网关服务: $GATEWAY_TLS_URL"
+Write-Host "安装目录: $Dir"
+Write-Host "==========================================================" -ForegroundColor Cyan
+
+# 1. 创建安装目录
+if (-not (Test-Path -Path $Dir)) {
+    New-Item -ItemType Directory -Path $Dir -Force | Out-Null
+}
+$resolvedDir = (Resolve-Path -Path $Dir).Path
+Set-Location -Path $resolvedDir
+
+# 2. 探测系统架构
+$arch = $env:PROCESSOR_ARCHITECTURE.ToLower()
+$meshArch = "windows-amd64"
+if ($arch -eq "arm64") {
+    $meshArch = "windows-arm64"
+}
+Write-Host "1. 探测主机操作系统与架构: Windows (${meshArch})" -ForegroundColor Cyan
+
+# 3. 下载网关 CA 证书
+Write-Host "2. 正在下载网关 CA 证书..." -ForegroundColor Cyan
+$caFile = Join-Path $resolvedDir "ca.crt"
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
+Invoke-RestMethod -Uri "$DOWNLOAD_URL/download/ca.crt" -OutFile $caFile
+
+# 4. 停止可能运行中的旧进程并下载 mesh.exe
+Write-Host "3. 正在下载 mesh.exe 节点程序 (${meshArch})..." -ForegroundColor Cyan
+Get-Process -Name "mesh" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Start-Sleep -Milliseconds 500
+
+$exeFile = Join-Path $resolvedDir "mesh.exe"
+Invoke-RestMethod -Uri "$DOWNLOAD_URL/download/mesh?arch=$meshArch" -OutFile $exeFile
+
+# 5. 校验 SHA-256 完整性 (防篡改)
+Write-Host "4. 正在校验 mesh.exe 完整性 (SHA-256)..." -ForegroundColor Cyan
+try {
+    $rawHashResp = (Invoke-RestMethod -Uri "$DOWNLOAD_URL/download/mesh.sha256?arch=$meshArch").Trim()
+    $expectedHash = ($rawHashResp -split '\s+')[0].ToLower()
+    $actualHash = (Get-FileHash -Path $exeFile -Algorithm SHA256).Hash.ToLower()
+
+    if ($expectedHash -and $actualHash -ne $expectedHash) {
+        Write-Host "❌ 二进制完整性校验失败！期望: $expectedHash，实际: $actualHash" -ForegroundColor Red
+        Write-Host "疑似遭遇中间人篡改或下载损坏，已紧急终止安装并移除文件。" -ForegroundColor Red
+        Remove-Item -Path $exeFile -Force -ErrorAction SilentlyContinue
+        Exit 1
+    }
+    Write-Host "   ✅ SHA-256 签名校验通过: $actualHash" -ForegroundColor Green
+} catch {
+    Write-Host "⚠️ 获取或比对签名校验值异常: $_ ，继续执行" -ForegroundColor Yellow
+}
+
+# 6. 执行节点安全证书配对
+Write-Host "5. 正在执行节点安全证书配对..." -ForegroundColor Cyan
+& $exeFile pair --server $GATEWAY_TLS_URL --ca $caFile --token $Token --dir $resolvedDir
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "❌ 节点证书配对失败，请检查邀请码或网关端口与证书连接。" -ForegroundColor Red
+    Exit $LASTEXITCODE
+}
+
+Write-Host "==========================================================" -ForegroundColor Green
+Write-Host "✅ 节点已成功与网关完成安全证书配对！" -ForegroundColor Green
+Write-Host ""
+Write-Host "正在后台启动 mesh node 工作循环..." -ForegroundColor Cyan
+
+# 7. 后台拉起节点工作进程 (静默无黑框运行)
+$logFile = Join-Path $resolvedDir "node.log"
+$errFile = Join-Path $resolvedDir "node.err.log"
+$cfgFile = Join-Path $resolvedDir "node.json"
+
+$startParams = @{
+    FilePath = $exeFile
+    ArgumentList = @("node", "--dir", $resolvedDir, "--config", $cfgFile)
+    WorkingDirectory = $resolvedDir
+    RedirectStandardOutput = $logFile
+    RedirectStandardError = $errFile
+    WindowStyle = "Hidden"
+    PassThru = $true
+}
+$proc = Start-Process @startParams
+
+Write-Host "🎉 节点启动成功！后台进程 PID: $($proc.Id)" -ForegroundColor Green
+Write-Host "运行日志文件: $logFile" -ForegroundColor Yellow
+Write-Host "查看实时日志命令 (PowerShell):" -ForegroundColor Gray
+Write-Host "  Get-Content -Path '$logFile' -Wait" -ForegroundColor White
+Write-Host "==========================================================" -ForegroundColor Green
+`, downloadURL, tlsURL, token)
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(script))
 }
@@ -345,4 +573,61 @@ func (s *Server) handleDownloadSkill(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeError(w, http.StatusNotFound, "not_found", "SKILL.md not found on gateway")
+}
+
+// handleCreateInvitation mints an invitation token (single-use or multi-use) for node enrollment.
+func (s *Server) handleCreateInvitation(w http.ResponseWriter, r *http.Request) {
+	if s.policies != nil {
+		token := extractOperatorToken(r)
+		if token == "" {
+			writeError(w, http.StatusUnauthorized, "unauthorized", "operator token required")
+			return
+		}
+		if _, err := s.policies.Authenticate(r.Context(), token); err != nil {
+			writeError(w, http.StatusUnauthorized, "unauthorized", "invalid operator token")
+			return
+		}
+	}
+
+	var in struct {
+		TTLMinutes int `json:"ttl_minutes"`
+		MaxUses    int `json:"max_uses"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&in)
+
+	if in.TTLMinutes <= 0 {
+		in.TTLMinutes = 120 // 默认 2 小时
+	}
+	if in.TTLMinutes > 1440 {
+		in.TTLMinutes = 1440 // 最大 24 小时
+	}
+	if in.MaxUses == 0 {
+		in.MaxUses = 1
+	}
+
+	ttl := time.Duration(in.TTLMinutes) * time.Minute
+	invitation, err := s.ca.GenerateInvitationWithUses(ttl, in.MaxUses)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "failed to issue invitation: "+err.Error())
+		return
+	}
+
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	installCmd := fmt.Sprintf("curl -fsSL %s://%s/download/install.sh | bash -s -- %s", scheme, r.Host, invitation.Token)
+	installCmdPS1 := fmt.Sprintf("irm \"%s://%s/download/install.ps1?token=%s\" | iex", scheme, r.Host, invitation.Token)
+
+	isMulti := in.MaxUses > 1 || in.MaxUses == -1
+	writeJSON(w, http.StatusOK, map[string]any{
+		"token":              invitation.Token,
+		"expires_at":         invitation.ExpiresAt.Format(time.RFC3339),
+		"max_uses":           invitation.MaxUses,
+		"multi_use":          isMulti,
+		"server_fingerprint": invitation.ServerFingerprint,
+		"install_cmd":        installCmd,
+		"install_cmd_bash":   installCmd,
+		"install_cmd_ps1":    installCmdPS1,
+	})
 }

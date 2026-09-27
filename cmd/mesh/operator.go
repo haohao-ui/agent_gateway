@@ -25,7 +25,7 @@ func runCredential(ctx context.Context, args []string) error {
 		return errors.New("usage: mesh credential issue|revoke [--data-dir DIR] [flags]")
 	}
 	cmd := newCommand("credential "+args[0], "Trusted local credential administration. Requires access to the gateway data directory.")
-	dir := cmd.flags.String("data-dir", "./gateway-data", "gateway data directory")
+	dir := cmd.flags.String("data-dir", envString("MESH_DATA_DIR", "./gateway-data"), "gateway data directory")
 	role := cmd.flags.String("role", "admin", "admin, operator, or viewer")
 	nodes := cmd.flags.String("nodes", "", "comma separated node scopes (empty for admin)")
 	ttl := cmd.flags.Duration("ttl", 365*24*time.Hour, "credential lifetime (maximum 365 days)")
@@ -226,9 +226,9 @@ func runDevice(ctx context.Context, args []string) error {
 
 func runDeviceRevoke(ctx context.Context, args []string) error {
 	cmd := newCommand("device revoke", "Revoke a node certificate using an administrator credential.")
-	server := cmd.flags.String("server", "", "HTTPS gateway origin")
-	ca := cmd.flags.String("ca", "", "trusted CA file")
-	token := cmd.flags.String("token-file", "", "operator token file")
+	server := cmd.flags.String("server", envOrDefault([]string{"MESH_SERVER_URL", "MESH_SERVER"}, ""), "HTTPS gateway origin")
+	ca := cmd.flags.String("ca", envOrDefault([]string{"MESH_CA_FILE", "MESH_CA"}, ""), "trusted CA file")
+	token := cmd.flags.String("token-file", envString("MESH_TOKEN_FILE", ""), "operator token file")
 	reason := cmd.flags.String("reason", "", "audit reason")
 	if err := cmd.flags.Parse(args[1:]); err != nil {
 		return err
@@ -248,9 +248,9 @@ func runDeviceRevoke(ctx context.Context, args []string) error {
 
 func runDeviceList(ctx context.Context, args []string) error {
 	cmd := newCommand("device list", "List registered devices (operator credential required).")
-	server := cmd.flags.String("server", "", "HTTPS gateway origin")
-	ca := cmd.flags.String("ca", "", "trusted CA file")
-	token := cmd.flags.String("token-file", "", "operator token file")
+	server := cmd.flags.String("server", envOrDefault([]string{"MESH_SERVER_URL", "MESH_SERVER"}, ""), "HTTPS gateway origin")
+	ca := cmd.flags.String("ca", envOrDefault([]string{"MESH_CA_FILE", "MESH_CA"}, ""), "trusted CA file")
+	token := cmd.flags.String("token-file", envString("MESH_TOKEN_FILE", ""), "operator token file")
 	if err := cmd.flags.Parse(args); err != nil {
 		return err
 	}

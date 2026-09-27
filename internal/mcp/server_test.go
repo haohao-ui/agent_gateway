@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"agent-gateway/internal/devicestore"
+	"agent-gateway/internal/policy"
 	"agent-gateway/internal/taskstore"
 	official "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -241,3 +242,82 @@ func TestMCPServer_DeviceListAndDiagnose(t *testing.T) {
 		t.Fatalf("doctor_diagnose returned error: %+v", diagRes.Content)
 	}
 }
+
+func TestMCPServer_NodeExecute(t *testing.T) {
+	session, cleanup := setupTestMCP(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Call node_execute tool with short timeout for mock task
+	res, err := session.CallTool(ctx, &official.CallToolParams{
+		Name: "node_execute",
+		Arguments: NodeExecuteInput{
+			NodeID:         "node-exec-1",
+			Command:        "echo hello-mesh",
+			Capability:     "bash",
+			TimeoutSeconds: 1,
+		},
+	})
+	if err != nil {
+		t.Fatalf("call node_execute: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("node_execute error: %+v", res.Content)
+	}
+
+	var out NodeExecuteOutput
+	if len(res.Content) > 0 {
+		if tc, ok := res.Content[0].(*official.TextContent); ok {
+			_ = json.Unmarshal([]byte(tc.Text), &out)
+		}
+	}
+	if out.TaskID == "" || out.NodeID != "node-exec-1" {
+		t.Errorf("unexpected execute result: %+v", out)
+	}
+}
+
+func TestMCPServer_RoleScopeAuthorization(t *testing.T) {
+	adminCtx := policy.WithPrincipal(context.Background(), policy.Principal{
+		ID:   "admin-1",
+		Role: policy.Admin,
+	})
+
+	operatorCtx := policy.WithPrincipal(context.Background(), policy.Principal{
+		ID:      "op-1",
+		Role:    policy.Operator,
+		NodeIDs: []string{"node-A", "node-B"},
+	})
+
+	viewerCtx := policy.WithPrincipal(context.Background(), policy.Principal{
+		ID:      "view-1",
+		Role:    policy.Viewer,
+		NodeIDs: []string{"node-A"},
+	})
+
+	// 1. Admin can submit to any node
+	if err := authorizeNodeAction(adminCtx, policy.ActionTaskSubmit, "node-any"); err != nil {
+		t.Errorf("admin should be authorized for any node, got: %v", err)
+	}
+
+	// 2. Operator can submit to node-A, but NOT node-C
+	if err := authorizeNodeAction(operatorCtx, policy.ActionTaskSubmit, "node-A"); err != nil {
+		t.Errorf("operator should be authorized for node-A, got: %v", err)
+	}
+	if err := authorizeNodeAction(operatorCtx, policy.ActionTaskSubmit, "node-C"); err == nil {
+		t.Errorf("operator should be denied for node-C outside its scope")
+	}
+
+	// 3. Viewer can read node-A, but NOT submit to node-A, and NOT read node-B
+	if err := authorizeNodeAction(viewerCtx, policy.ActionTaskRead, "node-A"); err != nil {
+		t.Errorf("viewer should be authorized to read node-A, got: %v", err)
+	}
+	if err := authorizeNodeAction(viewerCtx, policy.ActionTaskSubmit, "node-A"); err == nil {
+		t.Errorf("viewer should be denied to submit task")
+	}
+	if err := authorizeNodeAction(viewerCtx, policy.ActionTaskRead, "node-B"); err == nil {
+		t.Errorf("viewer should be denied to read node-B outside its scope")
+	}
+}
+

@@ -15,6 +15,8 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+
+	"agent-gateway/internal/protocol"
 )
 
 const usage = `agent-gateway (or mesh) is the unified agent gateway and worker CLI.
@@ -47,6 +49,8 @@ Run "agent-gateway <command> --help" for detailed flags.
 `
 
 func main() {
+	loadDotEnv()
+
 	if len(os.Args) < 2 {
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
@@ -83,6 +87,9 @@ func main() {
 		err = runFile(ctx, os.Args[2:])
 	case "service":
 		err = runService(ctx, os.Args[2:])
+	case "version", "-v", "--version":
+		fmt.Printf("mesh %s\n", protocol.FullVersion())
+		return
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 		return
@@ -110,7 +117,7 @@ func newCommand(name, help string) *command {
 		flags.PrintDefaults()
 	}
 	cmd := &command{flags: flags}
-	flags.StringVar(&cmd.level, "log-level", "info", "log level: debug, info, warn or error")
+	flags.StringVar(&cmd.level, "log-level", envString("MESH_LOG_LEVEL", "info"), "log level: debug, info, warn or error")
 	return cmd
 }
 

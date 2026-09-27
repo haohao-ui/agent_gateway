@@ -82,8 +82,8 @@ type Server struct {
 	allowPlainHTTP bool
 	adminPassword  string
 	adminToken     string
-	mcpSessions   sync.Map // sessionID (string) -> expiry time (time.Time)
-	nodeRuntime   sync.Map // nodeID (string) -> NodeRuntimeInfo
+	mcpSessions    sync.Map // sessionID (string) -> expiry time (time.Time)
+	nodeRuntime    sync.Map // nodeID (string) -> NodeRuntimeInfo
 
 	// pairLimiter bounds unauthenticated /v1/pair attempts per client address.
 	pairLimiter *pairLimiter
@@ -94,13 +94,16 @@ type Server struct {
 
 // NodeRuntimeInfo tracks real-time heartbeat, software version and detected agent capabilities.
 type NodeRuntimeInfo struct {
-	NodeID   string                   `json:"node_id"`
-	Version  string                   `json:"version"`
-	OS       string                   `json:"os"`
-	Arch     string                   `json:"arch"`
-	Agents   []protocol.AgentSoftware `json:"agents"`
-	LastSeen time.Time                `json:"last_seen"`
-	Online   bool                     `json:"online"`
+	NodeID    string                   `json:"node_id"`
+	Version   string                   `json:"version"`
+	OS        string                   `json:"os"`
+	Arch      string                   `json:"arch"`
+	Hostname  string                   `json:"hostname,omitempty"`
+	Status    string                   `json:"status,omitempty"`
+	Agents    []protocol.AgentSoftware `json:"agents"`
+	LastSeen  time.Time                `json:"last_seen"`
+	StartedAt int64                    `json:"started_at,omitempty"`
+	Online    bool                     `json:"online"`
 }
 
 // NewServer initializes an HTTP/2 API handler with taskstore and identity CA.
@@ -171,16 +174,20 @@ func (s *Server) registerRoutes() {
 
 	// Download Center for node deployment and skills
 	s.mux.HandleFunc("GET /download/mesh", s.handleDownloadMesh)
+	s.mux.HandleFunc("GET /download/mesh.sha256", s.handleDownloadMeshSHA256)
 	s.mux.HandleFunc("GET /download/ca.crt", s.handleDownloadCA)
 	s.mux.HandleFunc("GET /download/install.sh", s.handleDownloadInstallScript)
+	s.mux.HandleFunc("GET /download/install.ps1", s.handleDownloadInstallPowerShell)
 	s.mux.HandleFunc("GET /skills/agent-mesh/SKILL.md", s.handleDownloadSkill)
 	s.mux.HandleFunc("GET /download/skills/agent-mesh/SKILL.md", s.handleDownloadSkill)
+	s.mux.HandleFunc("GET /download/SKILL.md", s.handleDownloadSkill)
 
 	// System Management (TLS configuration and restart)
 	s.mux.HandleFunc("GET /api/system/tls", s.handleGetTLSStatus)
 	s.mux.HandleFunc("POST /api/system/tls/upload", s.handleUploadTLS)
 	s.mux.HandleFunc("POST /api/system/tls/reset", s.handleResetTLS)
 	s.mux.HandleFunc("POST /api/system/restart", s.handleSystemRestart)
+	s.mux.HandleFunc("POST /api/operator/invitations", s.handleCreateInvitation)
 
 	// Streamable HTTP / SSE MCP protocol endpoint
 	s.mux.HandleFunc("/mcp", s.handleMCP)
@@ -221,10 +228,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	expectedPass := s.adminPassword
-	if expectedPass == "" {
-		expectedPass = "admin"
-	}
-	if in.Username != "admin" || in.Password != expectedPass {
+	if expectedPass == "" || in.Username != "admin" || in.Password != expectedPass {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "invalid username or password")
 		return
 	}
@@ -232,7 +236,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		Name:     "gateway_token",
 		Value:    s.adminToken,
 		Path:     "/",
-		HttpOnly: false,
+		HttpOnly: true, // 加固：禁止前端 JavaScript 访问敏感认证 Cookie，杜绝 XSS 凭据窃取
 		SameSite: http.SameSiteLaxMode,
 		Secure:   r.TLS != nil,
 		MaxAge:   30 * 24 * 3600,
@@ -240,7 +244,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":   "ok",
 		"username": "admin",
-		"token":    s.adminToken,
+		"version":  protocol.FullVersion(),
 	})
 }
 
@@ -487,14 +491,26 @@ func (s *Server) handleClaim(w http.ResponseWriter, r *http.Request) {
 	if arch == "" {
 		arch = "amd64"
 	}
+	hostname := req.Hostname
+	if hostname == "" {
+		hostname = osName
+	}
 	s.nodeRuntime.Store(nodeID, NodeRuntimeInfo{
-		NodeID:   nodeID,
-		Version:  version,
-		OS:       osName,
-		Arch:     arch,
-		Agents:   req.Agents,
-		LastSeen: time.Now().UTC(),
-		Online:   true,
+		NodeID:    nodeID,
+		Version:   version,
+		OS:        osName,
+		Arch:      arch,
+		Hostname:  hostname,
+		Status:    "online",
+		Agents:    req.Agents,
+		LastSeen:  time.Now().UTC(),
+		StartedAt: req.StartedAt,
+		Online:    true,
+	})
+	s.publishEvent(events.Event{
+		Type:      events.TypeNodeHeartbeat,
+		NodeID:    nodeID,
+		Timestamp: time.Now().UTC(),
 	})
 
 	leaseDuration := time.Duration(req.LeaseDurationSeconds) * time.Second

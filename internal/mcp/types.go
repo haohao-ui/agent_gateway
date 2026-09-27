@@ -50,6 +50,24 @@ type HandoffInput struct {
 	TimeoutSeconds int    `json:"timeout_seconds,omitempty" jsonschema:"Task timeout in seconds (default 120)"`
 }
 
+// NodeExecuteInput defines input arguments for node_execute / execute_on_node tool.
+type NodeExecuteInput struct {
+	NodeID         string `json:"node_id" jsonschema:"Target node identifier where the command should execute"`
+	Command        string `json:"command" jsonschema:"The command or instruction text to execute on the remote node"`
+	Capability     string `json:"capability,omitempty" jsonschema:"Capability name (e.g. bash, python3, claude, agy, defaults to bash or agent.run)"`
+	TimeoutSeconds int    `json:"timeout_seconds,omitempty" jsonschema:"Execution timeout in seconds (default 60)"`
+}
+
+// NodeExecuteOutput represents the direct result of executing a command on a remote node.
+type NodeExecuteOutput struct {
+	TaskID   string `json:"task_id"`
+	NodeID   string `json:"node_id"`
+	State    string `json:"state"`
+	ExitCode int    `json:"exit_code"`
+	Output   string `json:"output"`
+	Error    string `json:"error,omitempty"`
+}
+
 // CancelTaskInput defines input arguments for the task_cancel tool.
 type CancelTaskInput struct {
 	TaskID string `json:"task_id" jsonschema:"The unique task ID to cancel"`

@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -51,20 +52,31 @@ func (e *gatewayError) Unwrap() error { return e.kind }
 
 // GatewayClient talks to one gateway over HTTP/2 with the node's certificate.
 type GatewayClient struct {
-	base    *url.URL
-	http    *http.Client
-	version string
-	osName  string
-	arch    string
-	agents  []protocol.AgentSoftware
+	base      *url.URL
+	http      *http.Client
+	version   string
+	osName    string
+	arch      string
+	hostname  string
+	agents    []protocol.AgentSoftware
+	startedAt int64
 }
 
 // SetMetadata updates the node system and agent tools metadata sent during heartbeats/claims.
-func (c *GatewayClient) SetMetadata(version, osName, arch string, agents []protocol.AgentSoftware) {
+func (c *GatewayClient) SetMetadata(version, osName, arch string, agents []protocol.AgentSoftware, startedAt int64) {
 	c.version = version
 	c.osName = osName
 	c.arch = arch
 	c.agents = agents
+	c.startedAt = startedAt
+	if c.hostname == "" {
+		c.hostname, _ = os.Hostname()
+	}
+}
+
+// SetHostname explicitly sets or overrides the node hostname.
+func (c *GatewayClient) SetHostname(hostname string) {
+	c.hostname = hostname
 }
 
 // NewGatewayClient builds an mTLS client. The certificate is the node identity:
@@ -114,13 +126,20 @@ func (c *GatewayClient) Claim(ctx context.Context, leaseSeconds int) (*protocol.
 	ctx, cancel := context.WithTimeout(ctx, claimRequestTimeout)
 	defer cancel()
 
+	hostname := c.hostname
+	if hostname == "" {
+		hostname, _ = os.Hostname()
+	}
+
 	var lease protocol.Lease
 	claimReq := protocol.ClaimRequest{
 		LeaseDurationSeconds: leaseSeconds,
 		NodeVersion:          c.version,
 		OS:                   c.osName,
 		Arch:                 c.arch,
+		Hostname:             hostname,
 		Agents:               c.agents,
+		StartedAt:            c.startedAt,
 	}
 	status, err := c.do(ctx, http.MethodPost, "/v1/tasks/claim", claimReq, &lease, http.StatusOK, http.StatusNoContent)
 	if err != nil {

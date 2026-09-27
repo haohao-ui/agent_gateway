@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -175,10 +177,7 @@ func serveGateway(ctx context.Context, opts gatewayOptions, onReady func(gateway
 	}
 
 	adminToken := ensureAdminToken(ctx, opts.DataDir, policies, opts.Log)
-	adminPass := os.Getenv("GATEWAY_ADMIN_PASSWORD")
-	if adminPass == "" {
-		adminPass = "admin"
-	}
+	adminPass := ensureAdminPassword(opts.DataDir, opts.Log)
 	api.SetAdminCredentials(adminPass, adminToken)
 
 	info := gatewayInfo{
@@ -305,6 +304,36 @@ func ensureAdminToken(ctx context.Context, dataDir string, policies *policy.Stor
 	return tok
 }
 
+// ensureAdminPassword loads, configures or randomly generates a persistent secure password for admin login.
+func ensureAdminPassword(dataDir string, log *slog.Logger) string {
+	pass := os.Getenv("GATEWAY_ADMIN_PASSWORD")
+	if pass != "" {
+		return pass
+	}
+	passPath := filepath.Join(dataDir, "admin.password")
+	if data, err := os.ReadFile(passPath); err == nil {
+		p := strings.TrimSpace(string(data))
+		if p != "" {
+			return p
+		}
+	}
+	// 首次启动未配置，自动生成 16 位强随机密码并妥善保存在私有文件
+	b := make([]byte, 10)
+	_, _ = rand.Read(b)
+	pass = hex.EncodeToString(b)
+	if err := os.WriteFile(passPath, []byte(pass+"\n"), 0600); err != nil {
+		log.Warn("failed to save admin password file", "error", err)
+	}
+	log.Warn("==================================================================")
+	log.Warn("🔒 [SECURITY] 已为您自动生成初始管理员安全密码，请妥善保存:")
+	log.Warn("👉 用户名: admin")
+	log.Warn("👉 密  码: " + pass)
+	log.Warn("👉 密码文件: " + passPath)
+	log.Warn("提示: 可通过环境变量 GATEWAY_ADMIN_PASSWORD 自定义管理员密码")
+	log.Warn("==================================================================")
+	return pass
+}
+
 // certHostWarning reports the case that leaves an operator with an opaque
 // "certificate is valid for 127.0.0.1, ::1" failure on the node: the gateway is
 // reachable on a non-loopback address, but nothing in that address reached the
@@ -363,13 +392,13 @@ func reachableAddr(addr string, hosts []string) string {
 
 func runServer(ctx context.Context, args []string) error {
 	cmd := newCommand("server", "Run the gateway: pairing endpoint and mTLS task API.")
-	addr := cmd.flags.String("addr", defaultServerAddr, "listen address (HTTPS/mTLS)")
-	httpAddr := cmd.flags.String("http-addr", "", "optional cleartext HTTP listen address for WebUI and MCP without TLS (e.g. 0.0.0.0:8080)")
-	dataDir := cmd.flags.String("data-dir", "./gateway-data", "directory for the CA, database and node records")
-	hosts := cmd.flags.String("hosts", "", "extra comma-separated host or IP names for the server certificate")
-	invitations := cmd.flags.Int("invitations", 1, "how many pairing invitations to print at startup")
-	inviteTTL := cmd.flags.Duration("invite-ttl", defaultInviteTTL, "how long each invitation stays valid")
-	expireEvery := cmd.flags.Duration("expire-sweep", defaultExpireSweep, "how often lapsed leases move to unknown")
+	addr := cmd.flags.String("addr", envOrDefault([]string{"MESH_SERVER_ADDR", "MESH_ADDR"}, defaultServerAddr), "listen address (HTTPS/mTLS)")
+	httpAddr := cmd.flags.String("http-addr", envString("MESH_HTTP_ADDR", ""), "optional cleartext HTTP listen address for WebUI and MCP without TLS (e.g. 0.0.0.0:8080)")
+	dataDir := cmd.flags.String("data-dir", envString("MESH_DATA_DIR", "./gateway-data"), "directory for the CA, database and node records")
+	hosts := cmd.flags.String("hosts", envString("MESH_HOSTS", ""), "extra comma-separated host or IP names for the server certificate")
+	invitations := cmd.flags.Int("invitations", envInt("MESH_INVITATIONS", 1), "how many pairing invitations to print at startup")
+	inviteTTL := cmd.flags.Duration("invite-ttl", envDuration("MESH_INVITE_TTL", defaultInviteTTL), "how long each invitation stays valid")
+	expireEvery := cmd.flags.Duration("expire-sweep", envDuration("MESH_EXPIRE_SWEEP", defaultExpireSweep), "how often lapsed leases move to unknown")
 	if err := cmd.flags.Parse(args); err != nil {
 		return err
 	}

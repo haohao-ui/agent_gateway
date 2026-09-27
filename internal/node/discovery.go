@@ -16,6 +16,7 @@ type AgentSoftware = protocol.AgentSoftware
 
 var knownCLIs = map[string]string{
 	"claude":   "Claude Code",
+	"agy":      "Antigravity CLI",
 	"codex":    "Codex CLI",
 	"gemini":   "Gemini CLI",
 	"hermes":   "Hermes",
@@ -25,9 +26,12 @@ var knownCLIs = map[string]string{
 	"python3":  "Python 3",
 	"node":     "Node.js",
 	"docker":   "Docker",
-	"git":      "Git",
-	"bash":     "Bash Shell",
-	"go":       "Go Runtime",
+	"git":        "Git",
+	"bash":       "Bash Shell",
+	"go":         "Go Runtime",
+	"powershell": "PowerShell",
+	"pwsh":       "PowerShell 7",
+	"cmd":        "Command Prompt",
 }
 
 var knownDarwinApps = map[string]struct{ ID, Name string }{
@@ -51,6 +55,7 @@ func DiscoverInstalledAgents(configuredAdapters []string) []AgentSoftware {
 				Name:     label,
 				Kind:     "cli",
 				Runnable: true,
+				Path:     path,
 			}
 			continue
 		}
@@ -68,6 +73,7 @@ func DiscoverInstalledAgents(configuredAdapters []string) []AgentSoftware {
 					Name:     label,
 					Kind:     "cli",
 					Runnable: true,
+					Path:     candidate,
 				}
 				break
 			}
@@ -91,6 +97,7 @@ func DiscoverInstalledAgents(configuredAdapters []string) []AgentSoftware {
 							Name:     meta.Name,
 							Kind:     "gui",
 							Runnable: false,
+							Path:     appPath,
 						}
 					}
 				}
@@ -159,19 +166,51 @@ func (c *Config) PopulateDefaultCapabilities() {
 	for i := range c.Capabilities {
 		existing[c.Capabilities[i].Name] = true
 	}
+	allowShell := c.AllowShell || os.Getenv("MESH_ALLOW_SHELL") == "1" || os.Getenv("MESH_ALLOW_SHELL") == "true"
 	if !existing["agent.run"] {
-		shell, args := DefaultShellAdapter()
-		if shell != "" {
-			c.Capabilities = append(c.Capabilities, Capability{
-				Name:           "agent.run",
-				Version:        1,
-				InstructionKey: defaultInstructionKey,
-				Adapter: Adapter{
-					Executable: shell,
-					Args:       args,
-				},
-			})
-			existing["agent.run"] = true
+		if allowShell {
+			shell, args := DefaultShellAdapter()
+			if shell != "" {
+				c.Capabilities = append(c.Capabilities, Capability{
+					Name:           "agent.run",
+					Version:        1,
+					InstructionKey: defaultInstructionKey,
+					Adapter: Adapter{
+						Executable: shell,
+						Args:       args,
+					},
+				})
+				existing["agent.run"] = true
+			}
+		} else {
+			// In secure default mode, bind agent.run to the first discovered agent CLI
+			// rather than exposing the raw system shell.
+			preferredAgents := []struct {
+				cmd  string
+				args []string
+			}{
+				{"claude", []string{"-p", "{instruction}"}},
+				{"codex", []string{"exec", "--skip-git-repo-check", "--", "{instruction}"}},
+				{"agy", []string{"--batch", "{instruction}"}},
+				{"hermes", []string{"chat", "-m", "{instruction}"}},
+			}
+			for _, pa := range preferredAgents {
+				if p, err := exec.LookPath(pa.cmd); err == nil && p != "" {
+					if abs, err := filepath.Abs(p); err == nil {
+						c.Capabilities = append(c.Capabilities, Capability{
+							Name:           "agent.run",
+							Version:        1,
+							InstructionKey: defaultInstructionKey,
+							Adapter: Adapter{
+								Executable: abs,
+								Args:       pa.args,
+							},
+						})
+						existing["agent.run"] = true
+						break
+					}
+				}
+			}
 		}
 	}
 
@@ -216,11 +255,17 @@ func (c *Config) PopulateDefaultCapabilities() {
 		}
 	}
 
-	tryAdd("bash", "bash", []string{"-c", "{instruction}"})
-	tryAdd("sh", "sh", []string{"-c", "{instruction}"})
-	tryAdd("python3", "python3", []string{"-c", "{instruction}"})
-	tryAdd("python", "python", []string{"-c", "{instruction}"})
+	// Only expose raw system shells and general interpreters when explicitly opted in
+	if allowShell {
+		tryAdd("bash", "bash", []string{"-c", "{instruction}"})
+		tryAdd("sh", "sh", []string{"-c", "{instruction}"})
+		tryAdd("python3", "python3", []string{"-c", "{instruction}"})
+		tryAdd("python", "python", []string{"-c", "{instruction}"})
+	}
+
+	// AI Agent CLI toolchains (safe domain-specific runners)
 	tryAdd("codex", "codex", []string{"exec", "--skip-git-repo-check", "--", "{instruction}"})
 	tryAdd("hermes", "hermes", []string{"chat", "-m", "{instruction}"})
 	tryAdd("claude", "claude", []string{"-p", "{instruction}"})
+	tryAdd("agy", "agy", []string{"--batch", "{instruction}"})
 }

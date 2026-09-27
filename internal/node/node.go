@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -70,6 +71,11 @@ func New(cfg Config, dir string, log *slog.Logger) (*Node, error) {
 	if dir == "" {
 		return nil, fmt.Errorf("%w: node directory is required", protocol.ErrInvalid)
 	}
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve node directory: %w", err)
+	}
+	dir = absDir
 	cfg.resolvePaths(dir)
 
 	caPEM, err := os.ReadFile(cfg.CAFile)
@@ -97,7 +103,7 @@ func New(cfg Config, dir string, log *slog.Logger) (*Node, error) {
 		configuredCaps = append(configuredCaps, c.Name)
 	}
 	discoveredAgents := DiscoverInstalledAgents(configuredCaps)
-	client.SetMetadata(protocol.NodeSoftwareVersion, runtime.GOOS, runtime.GOARCH, discoveredAgents)
+	client.SetMetadata(protocol.NodeSoftwareVersion, runtime.GOOS, runtime.GOARCH, discoveredAgents, time.Now().Unix())
 	journal, err := OpenJournal(filepath.Join(dir, journalFilename))
 	if err != nil {
 		return nil, err
@@ -299,7 +305,7 @@ func (n *Node) serve(ctx context.Context, lease *protocol.Lease) error {
 			downloadURL = parts[1]
 		}
 		log.Info("received system upgrade command", "url", downloadURL)
-		err := n.performSelfUpgrade(ctx, downloadURL)
+		upgradeLog, err := n.performSelfUpgrade(ctx, downloadURL)
 		if err != nil {
 			log.Error("self-upgrade failed", "error", err)
 			return n.finish(ctx, lease, protocol.Result{
@@ -319,7 +325,7 @@ func (n *Node) serve(ctx context.Context, lease *protocol.Lease) error {
 		}()
 		return n.finish(ctx, lease, protocol.Result{
 			State:    protocol.Succeeded,
-			Text:     "Node binary upgraded successfully. Restarting...",
+			Text:     upgradeLog,
 			ExitCode: 0,
 		}, "upgraded")
 	}
@@ -748,52 +754,68 @@ func checkCertificateValidity(certPEM []byte, now time.Time) error {
 	return nil
 }
 
-func (n *Node) performSelfUpgrade(ctx context.Context, downloadURL string) error {
+func (n *Node) performSelfUpgrade(ctx context.Context, downloadURL string) (string, error) {
 	if downloadURL == "" {
 		downloadURL = n.cfg.ServerURL + "/download/mesh"
+	} else if u, err := url.Parse(downloadURL); err == nil {
+		if (u.Hostname() == "127.0.0.1" || u.Hostname() == "localhost") && n.cfg.ServerURL != "" {
+			if serverU, sErr := url.Parse(n.cfg.ServerURL); sErr == nil && serverU.Hostname() != "127.0.0.1" && serverU.Hostname() != "localhost" {
+				u.Scheme = serverU.Scheme
+				u.Host = serverU.Host
+				downloadURL = u.String()
+			}
+		}
 	}
+
 	execPath, err := os.Executable()
 	if err != nil {
-		return fmt.Errorf("locate executable: %w", err)
+		return "", fmt.Errorf("locate executable: %w", err)
 	}
+
+	var logs []string
+	logs = append(logs, fmt.Sprintf("[1/3] 正在从网关下载最新节点程序...\n     下载地址: %s", downloadURL))
 
 	client := &http.Client{
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 		},
-		Timeout: 60 * time.Second,
+		Timeout: 90 * time.Second,
 	}
 	req, err := http.NewRequestWithContext(ctx, "GET", downloadURL, nil)
 	if err != nil {
-		return err
+		return "", err
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("download mesh: %w", err)
+		return "", fmt.Errorf("download mesh: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("download mesh returned status: %d", resp.StatusCode)
+		return "", fmt.Errorf("download mesh returned HTTP %d", resp.StatusCode)
 	}
 
 	tmpFile := execPath + ".upgrade.tmp"
 	f, err := os.OpenFile(tmpFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
 	if err != nil {
-		return fmt.Errorf("create upgrade tmp file: %w", err)
+		return "", fmt.Errorf("create upgrade tmp file: %w", err)
 	}
 	defer func() {
 		_ = f.Close()
 		_ = os.Remove(tmpFile)
 	}()
 
-	if _, err := io.Copy(f, resp.Body); err != nil {
-		return fmt.Errorf("write upgrade file: %w", err)
+	written, err := io.Copy(f, resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("write upgrade file: %w", err)
 	}
 	_ = f.Close()
 
-	if err := os.Rename(tmpFile, execPath); err != nil {
-		return fmt.Errorf("replace executable: %w", err)
-	}
-	return nil
-}
+	logs = append(logs, fmt.Sprintf("[2/3] 二进制下载成功，大小: %d 字节，正在执行安全文件替换...", written))
 
+	if err := os.Rename(tmpFile, execPath); err != nil {
+		return "", fmt.Errorf("replace executable: %w", err)
+	}
+
+	logs = append(logs, "[3/3] 二进制替换成功！节点将在 1 秒后自动平滑重启并重新连接网关...")
+	return strings.Join(logs, "\n\n"), nil
+}

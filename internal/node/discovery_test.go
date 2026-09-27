@@ -36,3 +36,35 @@ func TestDiscoverInstalledAgents(t *testing.T) {
 		t.Errorf("configured codex not found in discovered list")
 	}
 }
+
+func TestPopulateDefaultCapabilities_ShellRestriction(t *testing.T) {
+	// 1. When AllowShell is false (default), bash/sh/python must NOT be added
+	cfgDefault := &Config{
+		AllowShell: false,
+	}
+	cfgDefault.PopulateDefaultCapabilities()
+
+	for _, cap := range cfgDefault.Capabilities {
+		if cap.Name == "bash" || cap.Name == "sh" || cap.Name == "python" || cap.Name == "python3" {
+			t.Errorf("secure default should not expose %s capability", cap.Name)
+		}
+	}
+
+	// 2. When AllowShell is explicitly true, bash and sh can be added if present
+	cfgAllowed := &Config{
+		AllowShell: true,
+	}
+	cfgAllowed.PopulateDefaultCapabilities()
+
+	hasShell := false
+	for _, cap := range cfgAllowed.Capabilities {
+		if cap.Name == "bash" || cap.Name == "sh" || cap.Name == "agent.run" {
+			hasShell = true
+			break
+		}
+	}
+	if !hasShell {
+		t.Errorf("expected shell capability when AllowShell is enabled")
+	}
+}
+

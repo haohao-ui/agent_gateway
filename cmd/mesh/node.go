@@ -10,8 +10,8 @@ import (
 
 func runNode(ctx context.Context, args []string) error {
 	cmd := newCommand("node", "Run the task loop: claim work, execute it locally and report the result.")
-	configPath := cmd.flags.String("config", "./node/node.json", "node configuration file written by 'mesh pair'")
-	dir := cmd.flags.String("dir", "", "node directory holding the journal and outbox (default: the configuration file's directory)")
+	configPath := cmd.flags.String("config", envString("MESH_NODE_CONFIG", "./node/node.json"), "node configuration file written by 'mesh pair'")
+	dir := cmd.flags.String("dir", envString("MESH_NODE_DIR", ""), "node directory holding the journal and outbox (default: the configuration file's directory)")
 	if err := cmd.flags.Parse(args); err != nil {
 		return err
 	}

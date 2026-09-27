@@ -9,9 +9,6 @@ const (
 	// CurrentProtocolVersion represents the wire envelope protocol version.
 	CurrentProtocolVersion = 1
 
-	// NodeSoftwareVersion is the current build version of mesh node executable.
-	NodeSoftwareVersion = "0.1.0"
-
 	// Event Types for real-time streaming
 	EventTypeStdout        = "stdout"
 	EventTypeStderr        = "stderr"
@@ -20,11 +17,16 @@ const (
 	EventTypeInputResponse = "input_response"
 )
 
+// NodeSoftwareVersion is the current build version of mesh node executable.
+var NodeSoftwareVersion = FullVersion()
+
 // PairInvitation carries the one-time secret and metadata displayed to the admin.
 type PairInvitation struct {
 	Token             string    `json:"token"`
 	ExpiresAt         time.Time `json:"expires_at"`
 	ServerFingerprint string    `json:"server_fingerprint"`
+	MaxUses           int       `json:"max_uses,omitempty"`
+	UseCount          int       `json:"use_count,omitempty"`
 }
 
 // PairRequest is sent by a node during unauthenticated bootstrap over server TLS.
@@ -48,6 +50,7 @@ type AgentSoftware struct {
 	Name     string `json:"name"`
 	Kind     string `json:"kind"` // "cli" or "gui"
 	Runnable bool   `json:"runnable"`
+	Path     string `json:"path,omitempty"`
 }
 
 // ClaimRequest is sent by a node over mTLS to pull a queued task.
@@ -56,7 +59,9 @@ type ClaimRequest struct {
 	NodeVersion          string          `json:"node_version,omitempty"`
 	OS                   string          `json:"os,omitempty"`
 	Arch                 string          `json:"arch,omitempty"`
+	Hostname             string          `json:"hostname,omitempty"`
 	Agents               []AgentSoftware `json:"agents,omitempty"`
+	StartedAt            int64           `json:"started_at,omitempty"`
 }
 
 // RenewRequest extends a task lease while execution is ongoing.

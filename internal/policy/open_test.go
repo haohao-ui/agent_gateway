@@ -19,6 +19,7 @@ import (
 func TestOpenCreatesFileWithPrivateMode(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "policy.db")
 	st := openStoreAt(t, path)
+	freezeClock(st, testTime)
 	if _, _, err := st.Issue(context.Background(), Operator, []string{testNode}, testTime.Add(time.Hour)); err != nil {
 		t.Fatalf("Issue: %v", err)
 	}

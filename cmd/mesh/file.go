@@ -66,11 +66,11 @@ func fileHTTPClient(caFile string) (*http.Client, error) {
 
 func runFileUpload(ctx context.Context, args []string) error {
 	cmd := newCommand("file upload", "Upload a local file as an artifact associated with a task.")
-	serverURL := cmd.flags.String("server", "", "gateway base URL, e.g. https://127.0.0.1:8443")
-	token := cmd.flags.String("token", "", "operator token for authenticating to the gateway")
-	caFile := cmd.flags.String("ca", "", "path to gateway CA certificate")
+	serverURL := cmd.flags.String("server", envOrDefault([]string{"MESH_SERVER_URL", "MESH_SERVER"}, ""), "gateway base URL, e.g. https://127.0.0.1:8443")
+	token := cmd.flags.String("token", envOrDefault([]string{"MESH_OPERATOR_TOKEN", "MESH_TOKEN"}, ""), "operator token for authenticating to the gateway")
+	caFile := cmd.flags.String("ca", envOrDefault([]string{"MESH_CA_FILE", "MESH_CA"}, ""), "path to gateway CA certificate")
 	remoteName := cmd.flags.String("name", "", "remote filename (defaults to local file base name)")
-	dataDir := cmd.flags.String("data-dir", "./gateway-data", "path to gateway data directory for direct local mode")
+	dataDir := cmd.flags.String("data-dir", envString("MESH_DATA_DIR", "./gateway-data"), "path to gateway data directory for direct local mode")
 
 	if err := cmd.flags.Parse(args); err != nil {
 		return err
@@ -142,11 +142,11 @@ func runFileUpload(ctx context.Context, args []string) error {
 
 func runFileDownload(ctx context.Context, args []string) error {
 	cmd := newCommand("file download", "Download a task artifact to local filesystem.")
-	serverURL := cmd.flags.String("server", "", "gateway base URL, e.g. https://127.0.0.1:8443")
-	token := cmd.flags.String("token", "", "operator token for authenticating to the gateway")
-	caFile := cmd.flags.String("ca", "", "path to gateway CA certificate")
+	serverURL := cmd.flags.String("server", envOrDefault([]string{"MESH_SERVER_URL", "MESH_SERVER"}, ""), "gateway base URL, e.g. https://127.0.0.1:8443")
+	token := cmd.flags.String("token", envOrDefault([]string{"MESH_OPERATOR_TOKEN", "MESH_TOKEN"}, ""), "operator token for authenticating to the gateway")
+	caFile := cmd.flags.String("ca", envOrDefault([]string{"MESH_CA_FILE", "MESH_CA"}, ""), "path to gateway CA certificate")
 	outputPath := cmd.flags.String("output", "", "output file path (defaults to remote filename in current directory)")
-	dataDir := cmd.flags.String("data-dir", "./gateway-data", "path to gateway data directory for direct local mode")
+	dataDir := cmd.flags.String("data-dir", envString("MESH_DATA_DIR", "./gateway-data"), "path to gateway data directory for direct local mode")
 
 	if err := cmd.flags.Parse(args); err != nil {
 		return err
@@ -231,11 +231,11 @@ func runFileDownload(ctx context.Context, args []string) error {
 
 func runFileList(ctx context.Context, args []string) error {
 	cmd := newCommand("file list", "List all artifacts associated with a task.")
-	serverURL := cmd.flags.String("server", "", "gateway base URL, e.g. https://127.0.0.1:8443")
-	token := cmd.flags.String("token", "", "operator token for authenticating to the gateway")
-	caFile := cmd.flags.String("ca", "", "path to gateway CA certificate")
+	serverURL := cmd.flags.String("server", envOrDefault([]string{"MESH_SERVER_URL", "MESH_SERVER"}, ""), "gateway base URL, e.g. https://127.0.0.1:8443")
+	token := cmd.flags.String("token", envOrDefault([]string{"MESH_OPERATOR_TOKEN", "MESH_TOKEN"}, ""), "operator token for authenticating to the gateway")
+	caFile := cmd.flags.String("ca", envOrDefault([]string{"MESH_CA_FILE", "MESH_CA"}, ""), "path to gateway CA certificate")
 	jsonOutput := cmd.flags.Bool("json", false, "output results in JSON format")
-	dataDir := cmd.flags.String("data-dir", "./gateway-data", "path to gateway data directory for direct local mode")
+	dataDir := cmd.flags.String("data-dir", envString("MESH_DATA_DIR", "./gateway-data"), "path to gateway data directory for direct local mode")
 
 	if err := cmd.flags.Parse(args); err != nil {
 		return err
@@ -308,10 +308,10 @@ func runFileList(ctx context.Context, args []string) error {
 
 func runFileDelete(ctx context.Context, args []string) error {
 	cmd := newCommand("file delete", "Delete a task artifact.")
-	serverURL := cmd.flags.String("server", "", "gateway base URL, e.g. https://127.0.0.1:8443")
-	token := cmd.flags.String("token", "", "operator token for authenticating to the gateway")
-	caFile := cmd.flags.String("ca", "", "path to gateway CA certificate")
-	dataDir := cmd.flags.String("data-dir", "./gateway-data", "path to gateway data directory for direct local mode")
+	serverURL := cmd.flags.String("server", envOrDefault([]string{"MESH_SERVER_URL", "MESH_SERVER"}, ""), "gateway base URL, e.g. https://127.0.0.1:8443")
+	token := cmd.flags.String("token", envOrDefault([]string{"MESH_OPERATOR_TOKEN", "MESH_TOKEN"}, ""), "operator token for authenticating to the gateway")
+	caFile := cmd.flags.String("ca", envOrDefault([]string{"MESH_CA_FILE", "MESH_CA"}, ""), "path to gateway CA certificate")
+	dataDir := cmd.flags.String("data-dir", envString("MESH_DATA_DIR", "./gateway-data"), "path to gateway data directory for direct local mode")
 
 	if err := cmd.flags.Parse(args); err != nil {
 		return err

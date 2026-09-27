@@ -11,10 +11,10 @@ import (
 
 func runMCP(ctx context.Context, args []string) error {
 	cmd := newCommand("mcp", "Run Model Context Protocol (MCP) server over standard I/O for Claude Desktop, Cursor and Cline.")
-	serverURL := cmd.flags.String("server", "", "gateway base URL, e.g. https://127.0.0.1:8443 (remote mode)")
-	token := cmd.flags.String("token", "", "operator token for authenticating to gateway server (remote mode)")
-	caFile := cmd.flags.String("ca", "", "path to gateway CA certificate to trust (remote mode)")
-	dataDir := cmd.flags.String("data-dir", "./gateway-data", "path to gateway data directory (when running in direct local mode)")
+	serverURL := cmd.flags.String("server", envOrDefault([]string{"MESH_SERVER_URL", "MESH_SERVER"}, ""), "gateway base URL, e.g. https://127.0.0.1:8443 (remote mode)")
+	token := cmd.flags.String("token", envOrDefault([]string{"MESH_OPERATOR_TOKEN", "MESH_TOKEN"}, ""), "operator token for authenticating to gateway server (remote mode)")
+	caFile := cmd.flags.String("ca", envOrDefault([]string{"MESH_CA_FILE", "MESH_CA"}, ""), "path to gateway CA certificate to trust (remote mode)")
+	dataDir := cmd.flags.String("data-dir", envString("MESH_DATA_DIR", "./gateway-data"), "path to gateway data directory (when running in direct local mode)")
 
 	if err := cmd.flags.Parse(args); err != nil {
 		return err

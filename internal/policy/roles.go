@@ -1,5 +1,7 @@
 package policy
 
+import "context"
+
 // Role is the permission level of an operator principal. The values are the
 // persisted form (they are what the role column contains), so they must not be
 // renamed without a migration.
@@ -31,18 +33,38 @@ type Principal struct {
 	NodeIDs []string
 }
 
-// The action vocabulary. These five strings are the frozen set from the task
-// book; anything else is denied, so a typo in a caller is a refusal rather
-// than an accidental grant. They are not exported: the frozen interface lists
-// the actions as values, and widening the package's surface is the
-// coordinator's call.
 const (
-	actionTaskRead         = "task.read"
-	actionTaskSubmit       = "task.submit"
-	actionTaskCancel       = "task.cancel"
-	actionDeviceRevoke     = "device.revoke"
-	actionCredentialManage = "credential.manage"
+	// Action constants for authorization decisions.
+	ActionTaskRead         = "task.read"
+	ActionTaskSubmit       = "task.submit"
+	ActionTaskCancel       = "task.cancel"
+	ActionDeviceRevoke     = "device.revoke"
+	ActionCredentialManage = "credential.manage"
+
+	actionTaskRead         = ActionTaskRead
+	actionTaskSubmit       = ActionTaskSubmit
+	actionTaskCancel       = ActionTaskCancel
+	actionDeviceRevoke     = ActionDeviceRevoke
+	actionCredentialManage = ActionCredentialManage
 )
+
+type principalContextKey struct{}
+
+var principalCtxKey = principalContextKey{}
+
+// WithPrincipal stores the Principal in the context.
+func WithPrincipal(ctx context.Context, p Principal) context.Context {
+	return context.WithValue(ctx, principalCtxKey, p)
+}
+
+// PrincipalFromContext extracts the Principal from the context if present.
+func PrincipalFromContext(ctx context.Context) (Principal, bool) {
+	if ctx == nil {
+		return Principal{}, false
+	}
+	p, ok := ctx.Value(principalCtxKey).(Principal)
+	return p, ok
+}
 
 // nodeScopedActions are the actions that address one node and therefore
 // require a non-empty node ID and a scope that covers it. The remaining two

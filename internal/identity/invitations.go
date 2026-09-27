@@ -36,6 +36,8 @@ type invitationRecord struct {
 	CreatedAt time.Time `json:"created_at"`
 	ExpiresAt time.Time `json:"expires_at"`
 	UsedAt    time.Time `json:"used_at,omitzero"`
+	MaxUses   int       `json:"max_uses,omitempty"`
+	UseCount  int       `json:"use_count,omitempty"`
 
 	// pending says which file the record was read from, so the summaries can
 	// tell a spendable record from the record of a spent one. It is not stored.
@@ -71,9 +73,19 @@ func (s *InvitationStore) Dir() string { return s.dir }
 // A non-positive ttl produces an already expired invitation, which is how a
 // caller creates a record that must not be accepted.
 func (s *InvitationStore) Issue(ttl time.Duration, serverFingerprint string) (protocol.PairInvitation, error) {
+	return s.IssueWithUses(ttl, 1, serverFingerprint)
+}
+
+// IssueWithUses mints an invitation valid for ttl and a specified number of uses.
+// maxUses: 1 means single-use (one-machine limit), >1 means multi-use up to maxUses,
+// -1 means unlimited uses within ttl.
+func (s *InvitationStore) IssueWithUses(ttl time.Duration, maxUses int, serverFingerprint string) (protocol.PairInvitation, error) {
 	if ttl > MaxInvitationTTL {
 		return protocol.PairInvitation{}, fmt.Errorf("%w: invitation ttl %s exceeds the %s limit",
 			protocol.ErrInvalid, ttl, MaxInvitationTTL)
+	}
+	if maxUses == 0 {
+		maxUses = 1
 	}
 
 	raw := make([]byte, invitationBytes)
@@ -87,6 +99,8 @@ func (s *InvitationStore) Issue(ttl time.Duration, serverFingerprint string) (pr
 		Hash:      hashToken(token),
 		CreatedAt: now,
 		ExpiresAt: now.Add(ttl),
+		MaxUses:   maxUses,
+		UseCount:  0,
 	}
 	encoded, err := json.MarshalIndent(record, "", "  ")
 	if err != nil {
@@ -104,6 +118,8 @@ func (s *InvitationStore) Issue(ttl time.Duration, serverFingerprint string) (pr
 		Token:             token,
 		ExpiresAt:         record.ExpiresAt,
 		ServerFingerprint: serverFingerprint,
+		MaxUses:           record.MaxUses,
+		UseCount:          record.UseCount,
 	}, nil
 }
 
@@ -139,24 +155,50 @@ func (s *InvitationStore) Consume(token string) error {
 	}
 	now := s.now().UTC()
 	if now.After(record.ExpiresAt) {
-		// The record is spent either way; dropping it here keeps the directory
-		// from filling with tokens nobody can use.
 		_ = os.Remove(pending)
 		return fmt.Errorf("%w: invitation expired at %s", protocol.ErrUnauthorized, record.ExpiresAt.Format(time.RFC3339))
 	}
 
-	// The rename is the authority: exactly one caller can move the file away, so
-	// a replayed token finds nothing left to rename.
+	record.UseCount++
+	record.UsedAt = now
+
+	// Single-use limit (default: MaxUses <= 1)
+	if record.MaxUses <= 1 && record.MaxUses != -1 {
+		if err := os.Rename(pending, used); err != nil {
+			if os.IsNotExist(err) {
+				return fmt.Errorf("%w: invitation has already been used", protocol.ErrUnauthorized)
+			}
+			return fmt.Errorf("consume invitation: %w", err)
+		}
+		if encoded, err := json.MarshalIndent(record, "", "  "); err == nil {
+			_ = writeInvitationFile(used, append(encoded, '\n'))
+		}
+		return nil
+	}
+
+	// Multi-use: unlimited within TTL (MaxUses == -1)
+	if record.MaxUses == -1 {
+		if encoded, err := json.MarshalIndent(record, "", "  "); err == nil {
+			_ = writeInvitationFile(pending, append(encoded, '\n'))
+		}
+		return nil
+	}
+
+	// Multi-use with bounded count (MaxUses > 1)
+	if record.UseCount < record.MaxUses {
+		if encoded, err := json.MarshalIndent(record, "", "  "); err == nil {
+			_ = writeInvitationFile(pending, append(encoded, '\n'))
+		}
+		return nil
+	}
+
+	// Reached max uses limit, retire to used
 	if err := os.Rename(pending, used); err != nil {
 		if os.IsNotExist(err) {
 			return fmt.Errorf("%w: invitation has already been used", protocol.ErrUnauthorized)
 		}
 		return fmt.Errorf("consume invitation: %w", err)
 	}
-
-	// Record the consumption time for an operator, but the rename above is what
-	// decided the outcome: failing to write the detail must not fail the pairing.
-	record.UsedAt = now
 	if encoded, err := json.MarshalIndent(record, "", "  "); err == nil {
 		_ = writeInvitationFile(used, append(encoded, '\n'))
 	}

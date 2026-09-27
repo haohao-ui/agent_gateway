@@ -305,6 +305,7 @@ func (s *Server) operatorDeleteDevice(w http.ResponseWriter, r *http.Request) {
 		"node_id": nodeID,
 	})
 }
+
 type OperatorDeviceView struct {
 	NodeID      string                   `json:"node_id"`
 	Fingerprint string                   `json:"fingerprint"`
@@ -313,8 +314,11 @@ type OperatorDeviceView struct {
 	Version     string                   `json:"version,omitempty"`
 	OS          string                   `json:"os,omitempty"`
 	Arch        string                   `json:"arch,omitempty"`
+	Hostname    string                   `json:"hostname,omitempty"`
+	Status      string                   `json:"status,omitempty"`
 	Agents      []protocol.AgentSoftware `json:"agents,omitempty"`
 	Online      bool                     `json:"online"`
+	StartedAt   int64                    `json:"started_at,omitempty"`
 	LastSeen    *time.Time               `json:"last_seen,omitempty"`
 }
 
@@ -340,17 +344,26 @@ func (s *Server) operatorListDevices(w http.ResponseWriter, r *http.Request) {
 				ExpiresAt:   d.ExpiresAt,
 				Revoked:     d.Revoked,
 				Online:      false,
+				Status:      "offline",
 			}
 			if val, ok := s.nodeRuntime.Load(d.NodeID); ok {
 				if info, ok := val.(NodeRuntimeInfo); ok {
 					v.Version = info.Version
 					v.OS = info.OS
 					v.Arch = info.Arch
+					v.Hostname = info.Hostname
+					v.Status = info.Status
 					v.Agents = info.Agents
+					v.StartedAt = info.StartedAt
 					ls := info.LastSeen
 					v.LastSeen = &ls
 					if !d.Revoked && now.Sub(info.LastSeen) < 90*time.Second {
 						v.Online = true
+						if v.Status == "" {
+							v.Status = "online"
+						}
+					} else {
+						v.Status = "offline"
 					}
 				}
 			}
@@ -380,6 +393,17 @@ func (s *Server) operatorRestartDevice(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		handleStoreError(w, err)
 		return
+	}
+	if val, ok := s.nodeRuntime.Load(nodeID); ok {
+		if info, ok := val.(NodeRuntimeInfo); ok {
+			info.Status = "restarting"
+			s.nodeRuntime.Store(nodeID, info)
+			s.publishEvent(events.Event{
+				Type:      events.TypeNodeHeartbeat,
+				NodeID:    nodeID,
+				Timestamp: time.Now().UTC(),
+			})
+		}
 	}
 	s.notifyNode(nodeID)
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -419,6 +443,17 @@ func (s *Server) operatorUpgradeDevice(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		handleStoreError(w, err)
 		return
+	}
+	if val, ok := s.nodeRuntime.Load(nodeID); ok {
+		if info, ok := val.(NodeRuntimeInfo); ok {
+			info.Status = "upgrading"
+			s.nodeRuntime.Store(nodeID, info)
+			s.publishEvent(events.Event{
+				Type:      events.TypeNodeHeartbeat,
+				NodeID:    nodeID,
+				Timestamp: time.Now().UTC(),
+			})
+		}
 	}
 	s.notifyNode(nodeID)
 	writeJSON(w, http.StatusOK, map[string]any{

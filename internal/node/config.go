@@ -60,6 +60,10 @@ type Config struct {
 	// Capabilities is the closed list of work this node accepts. A task naming
 	// anything else is refused locally rather than executed.
 	Capabilities []Capability `json:"capabilities"`
+
+	// AllowShell controls whether raw system shell/interpreter capabilities
+	// (bash, sh, python3, etc.) are automatically exposed. Defaults to false for security.
+	AllowShell bool `json:"allow_shell,omitempty"`
 }
 
 // Capability binds one advertised capability to the local command that serves it.
@@ -200,6 +204,15 @@ func (c *Config) runnerConfig(cap *Capability, defaultWorkDir string) runner.Con
 		}
 		if user := os.Getenv("USER"); user != "" {
 			env["USER"] = user
+		}
+		for _, key := range []string{
+			"SHELL", "TMPDIR", "LANG", "LC_ALL",
+			"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+			"http_proxy", "https_proxy", "all_proxy", "no_proxy",
+		} {
+			if val := os.Getenv(key); val != "" {
+				env[key] = val
+			}
 		}
 	}
 	return runner.Config{

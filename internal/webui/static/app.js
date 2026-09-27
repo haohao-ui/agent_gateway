@@ -7,6 +7,7 @@
   let nodes = [];
   let currentTask = null;
   let activeTab = 'tab-tasks';
+  const expandedToolsNodes = new Set();
 
   // DOM Elements
   const statusIndicator = document.getElementById('connection-status');
@@ -76,6 +77,40 @@
     }
   }
 
+  let globalPollTimer = null;
+  let uptimeTicker = null;
+
+  function startBackgroundSync() {
+    if (globalPollTimer) clearInterval(globalPollTimer);
+    globalPollTimer = setInterval(() => {
+      if (dashboardView && !dashboardView.classList.contains('hidden')) {
+        fetchNodes();
+        fetchTasks();
+      }
+    }, 4000);
+
+    if (uptimeTicker) clearInterval(uptimeTicker);
+    uptimeTicker = setInterval(() => {
+      if (activeTab === 'tab-nodes') {
+        renderNodes();
+      }
+    }, 1000);
+  }
+
+  async function updateGatewayVersion() {
+    try {
+      const res = await fetch('/api/public/status');
+      if (res.ok) {
+        const data = await res.json();
+        const badge = document.getElementById('gateway-version-badge');
+        if (badge && data.version) {
+          badge.textContent = `🌐 网关 v${data.version}`;
+          badge.title = `中心网关版本: v${data.version}\nGit Commit: ${data.git_commit || '-'}\n构建时间: ${data.build_time || '-'}`;
+        }
+      }
+    } catch (e) {}
+  }
+
   function showDashboard() {
     if (loginView) {
       loginView.classList.add('hidden');
@@ -86,7 +121,9 @@
       dashboardView.style.display = 'block';
     }
     if (userBadge) userBadge.textContent = '👤 admin';
+    updateGatewayVersion();
     updateMCPDocs();
+    startBackgroundSync();
   }
 
   if (loginForm) {
@@ -103,17 +140,14 @@
           credentials: 'same-origin'
         });
         if (res.ok) {
-          const data = await res.json();
-          operatorToken = data.token || '';
-          if (operatorToken) {
-            localStorage.setItem('agent_gateway_token', operatorToken);
-          }
           showDashboard();
           await fetchTasks();
           await fetchNodes();
           connectSSE();
+          loadTLSStatus();
+          updateQuickInstall();
         } else {
-          loginError.textContent = '账号或密码错误（默认账号: admin / 密码: admin）';
+          loginError.textContent = '账号或密码错误（管理员初始密码见网关启动日志或 admin.password 文件）';
           loginError.classList.remove('hidden');
         }
       } catch (err) {
@@ -130,6 +164,8 @@
       } catch (e) {}
       operatorToken = '';
       localStorage.removeItem('agent_gateway_token');
+      if (globalPollTimer) { clearInterval(globalPollTimer); globalPollTimer = null; }
+      if (uptimeTicker) { clearInterval(uptimeTicker); uptimeTicker = null; }
       if (activeSSE) {
         try { activeSSE.close(); } catch (e) {}
         activeSSE = null;
@@ -150,6 +186,14 @@
       if (targetPane) {
         targetPane.classList.add('active');
         activeTab = targetId;
+        if (targetId === 'tab-submit') {
+          fetchNodes();
+          updateNodeSelector();
+        } else if (targetId === 'tab-nodes') {
+          fetchNodes();
+        } else if (targetId === 'tab-tasks') {
+          fetchTasks();
+        }
       }
     });
   });
@@ -179,6 +223,7 @@
       if (res.ok) {
         nodes = await res.json();
         renderNodes();
+        updateNodeSelector();
         updateMetrics();
       } else if (res.status === 401) {
         console.warn('Operator authentication required');
@@ -189,6 +234,122 @@
     } catch (err) {
       console.error('Error fetching nodes:', err);
     }
+  }
+
+  function updateNodeSelector() {
+    const select = document.getElementById('submit-node-select');
+    if (!select) return;
+    const currentVal = select.value;
+    select.innerHTML = '<option value="">-- 从在线节点中快捷选择 --</option>';
+
+    const validNodes = Array.isArray(nodes) ? nodes.filter(n => !n.revoked) : [];
+    if (validNodes.length === 0) {
+      const opt = document.createElement('option');
+      opt.value = "";
+      opt.textContent = "当前暂无可用节点";
+      opt.disabled = true;
+      select.appendChild(opt);
+      return;
+    }
+
+    validNodes.forEach(n => {
+      const opt = document.createElement('option');
+      opt.value = n.node_id;
+      const count = Array.isArray(n.agents) ? n.agents.length : 0;
+      const statusText = n.online ? '🟢 在线' : '⚪ 离线';
+      const hostLabel = n.hostname ? `🖥️ ${n.hostname} ` : '';
+      opt.textContent = `${statusText} ${hostLabel}(${n.node_id}) [${n.os || '未知'}/${n.arch || '未知'}, ${count}个工具]`;
+      select.appendChild(opt);
+    });
+
+    const nodeInput = document.getElementById('submit-node-id');
+    if (currentVal && validNodes.some(x => x.node_id === currentVal)) {
+      select.value = currentVal;
+    } else if (nodeInput && nodeInput.value) {
+      select.value = nodeInput.value;
+      renderNodeAgentTools(nodeInput.value);
+    } else {
+      // 找到第一个在线节点并自动填入
+      const onlineNode = validNodes.find(x => x.online) || validNodes[0];
+      if (onlineNode) {
+        select.value = onlineNode.node_id;
+        if (nodeInput && !nodeInput.value) {
+          nodeInput.value = onlineNode.node_id;
+          renderNodeAgentTools(onlineNode.node_id);
+        }
+      }
+    }
+  }
+
+  function renderNodeAgentTools(nodeId) {
+    const container = document.getElementById('node-agent-tools-container');
+    if (!container) return;
+    container.innerHTML = '';
+    const n = nodes.find(x => x.node_id === nodeId);
+    if (!n || !Array.isArray(n.agents) || n.agents.length === 0) {
+      container.innerHTML = '<span style="font-size:11px;color:var(--text-muted);">该节点尚未上报专属 Agent 工具，可使用下方通用工具</span>';
+      return;
+    }
+    const label = document.createElement('span');
+    label.style.fontSize = '12px';
+    label.style.color = '#38bdf8';
+    label.style.fontWeight = '600';
+    label.style.marginRight = '6px';
+    label.textContent = '🚀 该节点专属 Agent 工具 (点击直接选用): ';
+    container.appendChild(label);
+
+    n.agents.forEach(a => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'btn btn-secondary btn-sm';
+      btn.style.fontSize = '11px';
+      btn.style.padding = '2px 8px';
+      btn.style.margin = '2px 4px 2px 0';
+      btn.style.border = '1px solid rgba(56,189,248,0.4)';
+      btn.style.background = 'rgba(56,189,248,0.12)';
+      btn.style.color = '#38bdf8';
+      btn.textContent = `⚡ ${a.id}${a.version ? ' (' + a.version + ')' : ''}`;
+      btn.title = a.path ? `路径: ${a.path}` : a.id;
+      btn.addEventListener('click', () => {
+        selectToolCapability(a.id);
+      });
+      container.appendChild(btn);
+    });
+  }
+
+  window.selectToolCapability = function(cap) {
+    const capInput = document.getElementById('submit-capability');
+    const instInput = document.getElementById('submit-instruction');
+    if (capInput) capInput.value = cap;
+    if (instInput && (!instInput.value || instInput.value.includes('"instruction": "echo Hello') || instInput.value.includes('"prompt"'))) {
+      if (cap === 'bash' || cap === 'sh' || cap === 'zsh') {
+        instInput.value = JSON.stringify({ prompt: "uname -a && whoami" }, null, 2);
+      } else if (cap === 'python3' || cap === 'python') {
+        instInput.value = JSON.stringify({ prompt: "import sys; print(f'Python: {sys.version}')" }, null, 2);
+      } else if (cap === 'docker') {
+        instInput.value = JSON.stringify({ prompt: "docker ps -a" }, null, 2);
+      } else if (cap === 'git') {
+        instInput.value = JSON.stringify({ prompt: "git status" }, null, 2);
+      } else {
+        instInput.value = JSON.stringify({ prompt: `echo "Running ${cap} tool..."` }, null, 2);
+      }
+    }
+  };
+
+  function dispatchTaskToNode(nodeId) {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+    const btn = document.querySelector('[data-tab="tab-submit"]');
+    if (btn) btn.classList.add('active');
+    const pane = document.getElementById('tab-submit');
+    if (pane) pane.classList.add('active');
+
+    const input = document.getElementById('submit-node-id');
+    const select = document.getElementById('submit-node-select');
+    if (input) input.value = nodeId;
+    if (select) select.value = nodeId;
+    renderNodeAgentTools(nodeId);
+    if (input) input.focus();
   }
 
   function updateMetrics() {
@@ -282,6 +443,14 @@
     });
   }
 
+  function formatUptime(startedAtSec) {
+    if (!startedAtSec) return '';
+    const elapsed = Math.max(0, Math.floor(Date.now() / 1000 - startedAtSec));
+    if (elapsed < 60) return `运行 ${elapsed}秒`;
+    if (elapsed < 3600) return `运行 ${Math.floor(elapsed / 60)}分钟`;
+    return `运行 ${Math.floor(elapsed / 3600)}小时${Math.floor((elapsed % 3600) / 60)}分`;
+  }
+
   function renderNodes() {
     if (nodes.length === 0) {
       nodesTableBody.innerHTML = '<tr><td colspan="6" class="empty-state">当前暂无已登记节点</td></tr>';
@@ -294,24 +463,63 @@
       let statusBadge = '<span class="badge" style="background:#4b5563;color:#9ca3af;">OFFLINE</span>';
       if (isRevoked) {
         statusBadge = '<span class="badge badge-revoked">REVOKED</span>';
+      } else if (n.status === 'restarting') {
+        statusBadge = '<span class="badge" style="background:rgba(245,158,11,0.25);color:#fbbf24;border:1px solid rgba(245,158,11,0.5);">🔄 重启中 (RESTARTING)</span>';
+      } else if (n.status === 'upgrading') {
+        statusBadge = '<span class="badge" style="background:rgba(234,179,8,0.25);color:#facc15;border:1px solid rgba(234,179,8,0.5);">🚀 更新中 (UPGRADING)</span>';
       } else if (isOnline) {
         statusBadge = '<span class="badge badge-active" style="background:rgba(16,185,129,0.2);color:#34d399;">ONLINE</span>';
       }
 
       const versionStr = n.version ? `<code>v${escapeHtml(n.version)}</code>` : '<span style="color:var(--text-muted)">-</span>';
       const sysStr = (n.os && n.arch) ? `<span style="font-size:11px;color:var(--text-muted);">${escapeHtml(n.os)}/${escapeHtml(n.arch)}</span>` : '';
+      const uptimeStr = (isOnline && n.started_at && n.status !== 'restarting' && n.status !== 'upgrading')
+        ? `<div style="font-size:11px;color:#10b981;font-weight:500;margin-top:2px;">⏱️ ${formatUptime(n.started_at)}</div>`
+        : '';
+
+      const hostTitle = n.hostname ? `🖥️ ${escapeHtml(n.hostname)}` : '🖥️ 未命名主机';
+      const nodeColHtml = `
+        <div>
+          <div style="font-weight:600;font-size:13px;color:#f8fafc;margin-bottom:2px;">${hostTitle}</div>
+          <code style="font-size:11px;color:var(--text-muted);">${escapeHtml(n.node_id)}</code>
+        </div>
+      `;
 
       let agentsHtml = '<span style="font-size:11px;color:var(--text-muted);">未上报</span>';
       if (Array.isArray(n.agents) && n.agents.length > 0) {
-        agentsHtml = n.agents.map(a => {
-          return `<span class="badge" style="font-size:10px;margin:2px;background:rgba(56,189,248,0.15);color:var(--primary);border:1px solid rgba(56,189,248,0.3);">${escapeHtml(a.id)}</span>`;
+        const total = n.agents.length;
+        const isExpanded = expandedToolsNodes.has(n.node_id);
+        const displayLimit = 3;
+        const visible = isExpanded ? n.agents : n.agents.slice(0, displayLimit);
+
+        const tags = visible.map(a => {
+          return `<span class="badge agent-tool-tag" data-node="${escapeHtml(n.node_id)}" style="font-size:10px;margin:2px;cursor:pointer;background:rgba(56,189,248,0.15);color:var(--primary);border:1px solid rgba(56,189,248,0.3);" title="点击查看工具物理绝对路径与详情">⚡ ${escapeHtml(a.id)}</span>`;
         }).join('');
+
+        let controlBtns = '';
+        if (total > displayLimit) {
+          if (isExpanded) {
+            controlBtns = `
+              <button type="button" class="btn btn-secondary btn-sm toggle-tools-btn" data-node="${escapeHtml(n.node_id)}" style="font-size:10px;padding:2px 8px;margin:2px;background:rgba(250,204,21,0.12);border:1px solid rgba(250,204,21,0.3);color:#facc15;" title="收起剩余工具标签">🔼 收起</button>
+              <button type="button" class="btn btn-secondary btn-sm view-tools-modal-btn" data-node="${escapeHtml(n.node_id)}" style="font-size:10px;padding:2px 8px;margin:2px;background:rgba(56,189,248,0.12);border:1px solid rgba(56,189,248,0.4);color:#38bdf8;" title="弹窗查看所有工具绝对物理路径">📋 探测路径清单</button>
+            `;
+          } else {
+            controlBtns = `
+              <button type="button" class="btn btn-secondary btn-sm toggle-tools-btn" data-node="${escapeHtml(n.node_id)}" style="font-size:10px;padding:2px 8px;margin:2px;background:rgba(56,189,248,0.15);border:1px solid rgba(56,189,248,0.4);color:#38bdf8;font-weight:600;" title="点击就地展开该节点全部 ${total} 个工具名称">+${total - displayLimit} 全部 (${total}个)</button>
+              <button type="button" class="btn btn-secondary btn-sm view-tools-modal-btn" data-node="${escapeHtml(n.node_id)}" style="font-size:10px;padding:2px 6px;margin:2px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:var(--text-muted);" title="弹窗查看所有工具绝对物理路径">📋 路径清单</button>
+            `;
+          }
+        } else {
+          controlBtns = `<button type="button" class="btn btn-secondary btn-sm view-tools-modal-btn" data-node="${escapeHtml(n.node_id)}" style="font-size:10px;padding:2px 6px;margin:2px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:var(--text-muted);" title="查看工具详情">📋 详情</button>`;
+        }
+        agentsHtml = `<div style="display:flex;flex-wrap:wrap;align-items:center;">${tags}${controlBtns}</div>`;
       }
 
       const expiresAt = n.cert_expires_at ? new Date(n.cert_expires_at).toLocaleDateString() : '-';
 
       let actions = '';
       if (!isRevoked && isOnline) {
+        actions += `<button class="btn btn-primary btn-sm dispatch-task-btn" data-id="${n.node_id}" style="margin-right:4px;background:#0284c7;">⚡ 调试派工</button>`;
         actions += `<button class="btn btn-secondary btn-sm restart-node-btn" data-id="${n.node_id}" style="margin-right:4px;">🔄 重启</button>`;
         actions += `<button class="btn btn-primary btn-sm upgrade-node-btn" data-id="${n.node_id}" style="margin-right:4px;">🚀 更新</button>`;
       }
@@ -324,28 +532,121 @@
 
       return `
         <tr>
-          <td><strong>${escapeHtml(n.node_id)}</strong></td>
+          <td>${nodeColHtml}</td>
           <td>${statusBadge}</td>
-          <td><div>${versionStr}</div><div>${sysStr}</div></td>
-          <td style="max-width:240px;">${agentsHtml}</td>
+          <td><div>${versionStr}</div><div>${sysStr}</div>${uptimeStr}</td>
+          <td style="max-width:280px;">${agentsHtml}</td>
           <td>${expiresAt}</td>
           <td>${actions}</td>
         </tr>
       `;
     }).join('');
 
-    nodesTableBody.querySelectorAll('.revoke-node-btn').forEach(btn => {
-      btn.addEventListener('click', () => revokeNode(btn.getAttribute('data-id')));
-    });
-    nodesTableBody.querySelectorAll('.restart-node-btn').forEach(btn => {
-      btn.addEventListener('click', () => restartNode(btn.getAttribute('data-id')));
-    });
-    nodesTableBody.querySelectorAll('.upgrade-node-btn').forEach(btn => {
-      btn.addEventListener('click', () => upgradeNode(btn.getAttribute('data-id')));
-    });
-    nodesTableBody.querySelectorAll('.delete-node-btn').forEach(btn => {
-      btn.addEventListener('click', () => deleteNode(btn.getAttribute('data-id')));
-    });
+    // 使用事件委托确保频繁重绘下事件永久生效
+    if (nodesTableBody && !nodesTableBody._hasBoundEvents) {
+      nodesTableBody._hasBoundEvents = true;
+      nodesTableBody.addEventListener('click', (e) => {
+        const toggleBtn = e.target.closest('.toggle-tools-btn');
+        if (toggleBtn) {
+          const nid = toggleBtn.getAttribute('data-node');
+          if (expandedToolsNodes.has(nid)) {
+            expandedToolsNodes.delete(nid);
+          } else {
+            expandedToolsNodes.add(nid);
+          }
+          renderNodes();
+          return;
+        }
+
+        const modalBtn = e.target.closest('.view-tools-modal-btn, .agent-tool-tag, .show-more-tools-btn');
+        if (modalBtn) {
+          const nid = modalBtn.getAttribute('data-node');
+          if (nid) openAgentToolsModal(nid);
+          return;
+        }
+
+        const dispatchBtn = e.target.closest('.dispatch-task-btn');
+        if (dispatchBtn) {
+          dispatchTaskToNode(dispatchBtn.getAttribute('data-id'));
+          return;
+        }
+
+        const restartBtn = e.target.closest('.restart-node-btn');
+        if (restartBtn) {
+          restartNode(restartBtn.getAttribute('data-id'));
+          return;
+        }
+
+        const upgradeBtn = e.target.closest('.upgrade-node-btn');
+        if (upgradeBtn) {
+          upgradeNode(upgradeBtn.getAttribute('data-id'));
+          return;
+        }
+
+        const revokeBtn = e.target.closest('.revoke-node-btn');
+        if (revokeBtn) {
+          revokeNode(revokeBtn.getAttribute('data-id'));
+          return;
+        }
+
+        const deleteBtn = e.target.closest('.delete-node-btn');
+        if (deleteBtn) {
+          deleteNode(deleteBtn.getAttribute('data-id'));
+          return;
+        }
+      });
+    }
+  }
+
+  function openAgentToolsModal(nodeId) {
+    const n = nodes.find(x => x.node_id === nodeId);
+    if (!n) {
+      console.warn('Node not found:', nodeId);
+      return;
+    }
+    const modal = document.getElementById('agent-tools-modal');
+    const titleEl = document.getElementById('agent-tools-modal-title');
+    const subtitleEl = document.getElementById('agent-tools-modal-subtitle');
+    const tbody = document.getElementById('agent-tools-modal-tbody');
+    if (!modal || !tbody) return;
+
+    const hostname = n.hostname || n.node_id;
+    titleEl.textContent = `🖥️ ${hostname} 工具链清单 (共 ${n.agents ? n.agents.length : 0} 个)`;
+    subtitleEl.textContent = `该节点通过本地系统 PATH (LookPath) 及应用目录真实探测到的可用工具及二进制安装路径：`;
+
+    if (!Array.isArray(n.agents) || n.agents.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="5" class="empty-state">该节点尚未探测到任何已安装的 Agent 工具</td></tr>';
+    } else {
+      tbody.innerHTML = n.agents.map(a => {
+        const pathStr = a.path
+          ? `<code style="font-size:11px;color:#38bdf8;word-break:break-all;">${escapeHtml(a.path)}</code>`
+          : '<span style="font-size:11px;color:var(--text-muted);">(系统 PATH 自动发现)</span>';
+        const kindBadge = a.kind === 'gui'
+          ? '<span class="badge" style="background:rgba(168,85,247,0.2);color:#c084fc;font-size:10px;">GUI 应用</span>'
+          : '<span class="badge" style="background:rgba(56,189,248,0.2);color:#38bdf8;font-size:10px;">CLI 工具</span>';
+        return `
+          <tr>
+            <td><strong>⚡ ${escapeHtml(a.id)}</strong></td>
+            <td>${escapeHtml(a.name || a.id)}</td>
+            <td>${kindBadge}</td>
+            <td>${pathStr}</td>
+            <td><button class="btn btn-primary btn-sm modal-dispatch-tool-btn" data-node="${escapeHtml(n.node_id)}" data-cap="${escapeHtml(a.id)}" style="font-size:10px;padding:2px 8px;">调试</button></td>
+          </tr>
+        `;
+      }).join('');
+
+      tbody.querySelectorAll('.modal-dispatch-tool-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          modal.classList.add('hidden');
+          modal.style.display = 'none';
+          dispatchTaskToNode(btn.getAttribute('data-node'));
+          selectToolCapability(btn.getAttribute('data-cap'));
+        });
+      });
+    }
+
+    modal.classList.remove('hidden');
+    modal.style.display = 'flex';
   }
 
   async function deleteNode(nodeId) {
@@ -370,6 +671,11 @@
 
   async function restartNode(nodeId) {
     if (!confirm(`确定要远程重启节点 [${nodeId}] 吗？`)) return;
+    const targetNode = nodes.find(n => n.node_id === nodeId);
+    if (targetNode) {
+      targetNode.status = 'restarting';
+      renderNodes();
+    }
     try {
       const res = await fetch(`/v1/operator/devices/${nodeId}/restart`, {
         method: 'POST',
@@ -377,19 +683,27 @@
         credentials: 'same-origin'
       });
       const data = await res.json();
-      if (res.ok) {
-        alert(`已下发重启命令 (Task ID: ${data.task_id})`);
-        fetchTasks();
+      if (res.ok && data.task_id) {
+        await fetchTasks();
+        showTaskDetail(data.task_id);
+        setTimeout(fetchNodes, 2000);
       } else {
-        alert(`重启失败: ${data.message || res.statusText}`);
+        alert(`重启下发失败: ${data.message || res.statusText}`);
+        fetchNodes();
       }
     } catch (e) {
       alert(`请求异常: ${e.message}`);
+      fetchNodes();
     }
   }
 
   async function upgradeNode(nodeId) {
     if (!confirm(`确定让节点 [${nodeId}] 从网关自动下载最新可执行程序并升级重启吗？`)) return;
+    const targetNode = nodes.find(n => n.node_id === nodeId);
+    if (targetNode) {
+      targetNode.status = 'upgrading';
+      renderNodes();
+    }
     try {
       const res = await fetch(`/v1/operator/devices/${nodeId}/upgrade`, {
         method: 'POST',
@@ -397,23 +711,80 @@
         credentials: 'same-origin'
       });
       const data = await res.json();
-      if (res.ok) {
-        alert(`已下发自动更新命令 (Task ID: ${data.task_id})`);
-        fetchTasks();
+      if (res.ok && data.task_id) {
+        await fetchTasks();
+        showTaskDetail(data.task_id);
+        setTimeout(fetchNodes, 2500);
       } else {
-        alert(`更新失败: ${data.message || res.statusText}`);
+        alert(`更新下发失败: ${data.message || res.statusText}`);
+        fetchNodes();
       }
     } catch (e) {
       alert(`请求异常: ${e.message}`);
+      fetchNodes();
     }
   }
 
   // 4. Modals & Actions
-  function showTaskDetail(taskId) {
-    const t = tasks.find(x => x.id === taskId);
-    if (!t) return;
-    currentTask = t;
+  let detailPollTimer = null;
 
+  async function showTaskDetail(taskId) {
+    if (detailPollTimer) {
+      clearInterval(detailPollTimer);
+      detailPollTimer = null;
+    }
+
+    let t = tasks.find(x => x.id === taskId);
+    currentTask = t || { id: taskId, state: 'loading' };
+
+    renderTaskModalData(currentTask);
+    taskModal.classList.remove('hidden');
+
+    // 立即向后端拉取最新的单任务精确状态与完整输出
+    await fetchSingleTaskDetail(taskId);
+
+    // 如果任务仍处于排队或执行中，开启定时轮询直到执行完成
+    if (currentTask && (currentTask.state === 'running' || currentTask.state === 'leased' || currentTask.state === 'queued')) {
+      detailPollTimer = setInterval(async () => {
+        if (!currentTask || currentTask.id !== taskId || taskModal.classList.contains('hidden')) {
+          clearInterval(detailPollTimer);
+          detailPollTimer = null;
+          return;
+        }
+        await fetchSingleTaskDetail(taskId);
+        if (currentTask && currentTask.state !== 'running' && currentTask.state !== 'leased' && currentTask.state !== 'queued') {
+          clearInterval(detailPollTimer);
+          detailPollTimer = null;
+          fetchTasks();
+        }
+      }, 1000);
+    }
+  }
+
+  async function fetchSingleTaskDetail(taskId) {
+    try {
+      const res = await fetch(`/v1/operator/tasks/${taskId}`, {
+        headers: authHeaders(),
+        credentials: 'same-origin'
+      });
+      if (res.ok) {
+        const data = await res.json();
+        currentTask = data;
+        const idx = tasks.findIndex(x => x.id === taskId);
+        if (idx !== -1) {
+          tasks[idx] = data;
+          renderTasks();
+          updateMetrics();
+        }
+        renderTaskModalData(data);
+      }
+    } catch (e) {
+      console.error('Fetch task detail failed:', e);
+    }
+  }
+
+  function renderTaskModalData(t) {
+    if (!t) return;
     document.getElementById('modal-task-title').textContent = `任务详情: ${t.id}`;
     document.getElementById('modal-task-id').textContent = t.id;
     document.getElementById('modal-task-node').textContent = t.node_id || '-';
@@ -428,7 +799,7 @@
     try {
       inputStr = typeof t.input === 'string' ? JSON.stringify(JSON.parse(t.input), null, 2) : JSON.stringify(t.input, null, 2);
     } catch {
-      inputStr = String(t.input);
+      inputStr = String(t.input || '');
     }
     document.getElementById('modal-task-input').textContent = inputStr || '-';
 
@@ -451,10 +822,8 @@
         outputEl.textContent = content || '(无标准输出)';
       }
     } else {
-      outputEl.textContent = (t.state === 'running' || t.state === 'leased') ? '正在执行中，等待节点回报...\n' : '暂无输出日志\n';
+      outputEl.textContent = (t.state === 'running' || t.state === 'leased') ? '⏳ 正在执行中，等待节点回报输出...\n' : '暂无输出日志\n';
     }
-
-    taskModal.classList.remove('hidden');
   }
 
   function openReconcileModal(taskId) {
@@ -462,12 +831,29 @@
     reconcileModal.classList.remove('hidden');
   }
 
-  document.querySelectorAll('.modal-close-btn, .modal-backdrop').forEach(el => {
-    el.addEventListener('click', () => {
-      taskModal.classList.add('hidden');
-      reconcileModal.classList.add('hidden');
-      currentTask = null;
-    });
+  const agentToolsModal = document.getElementById('agent-tools-modal');
+
+  function closeAllModals() {
+    if (taskModal) { taskModal.classList.add('hidden'); taskModal.style.display = 'none'; }
+    if (reconcileModal) { reconcileModal.classList.add('hidden'); reconcileModal.style.display = 'none'; }
+    if (agentToolsModal) { agentToolsModal.classList.add('hidden'); agentToolsModal.style.display = 'none'; }
+    if (detailPollTimer) {
+      clearInterval(detailPollTimer);
+      detailPollTimer = null;
+    }
+    currentTask = null;
+  }
+
+  document.body.addEventListener('click', (e) => {
+    if (e.target.closest('.modal-close-btn') || e.target.classList.contains('modal-backdrop')) {
+      closeAllModals();
+    }
+  });
+
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      closeAllModals();
+    }
   });
 
   document.getElementById('reconcile-submit-btn').addEventListener('click', async () => {
@@ -538,7 +924,25 @@
     }
   }
 
-  // 5. Submit Task Form
+  // 5. Submit Task Form & Node Selector Linkage
+  const submitNodeSelect = document.getElementById('submit-node-select');
+  if (submitNodeSelect) {
+    submitNodeSelect.addEventListener('change', (e) => {
+      const val = e.target.value;
+      if (val) {
+        document.getElementById('submit-node-id').value = val;
+        renderNodeAgentTools(val);
+      }
+    });
+  }
+  const submitNodeInput = document.getElementById('submit-node-id');
+  if (submitNodeInput) {
+    submitNodeInput.addEventListener('input', (e) => {
+      const val = e.target.value.trim();
+      renderNodeAgentTools(val);
+    });
+  }
+
   submitForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     submitMessage.className = 'alert hidden';
@@ -552,7 +956,7 @@
     try {
       inputData = JSON.parse(rawInstruction);
     } catch {
-      inputData = { instruction: rawInstruction };
+      inputData = { instruction: rawInstruction, prompt: rawInstruction };
     }
 
     try {
@@ -570,10 +974,10 @@
 
       if (res.ok) {
         const data = await res.json();
-        submitMessage.textContent = `任务提交成功！Task ID: ${data.id}`;
+        submitMessage.textContent = `任务提交成功！Task ID: ${data.id}，已自动打开实时控制台追踪输出。`;
         submitMessage.className = 'alert alert-success';
-        submitForm.reset();
         await fetchTasks();
+        showTaskDetail(data.id);
       } else {
         const err = await res.text();
         submitMessage.textContent = `提交失败: ${err}`;
@@ -670,6 +1074,12 @@
   function handleStreamEvent(evt) {
     if (!evt || !evt.type) return;
 
+    // Node & Device lifecycle updates
+    if (evt.type === 'node.heartbeat' || evt.type === 'device.registered' || evt.type === 'node.registered') {
+      fetchNodes();
+      return;
+    }
+
     // Output chunk stream
     if (evt.type === 'task.output' || evt.type === 'stdout' || evt.type === 'stderr') {
       if (currentTask && currentTask.id === evt.task_id) {
@@ -746,12 +1156,7 @@ ${fullUrl}
 在 mcpServers 配置中添加以下配置（一行 URL 自动带鉴权）：
 ${JSON.stringify(mcpJson, null, 2)}
 
-3. 网关基本信息
-• 控制台看板：${origin}/ui/ (账号 admin / 密码 admin)
-• 原始 MCP 端点：${mcpUrl}
-• 操作员 Token：${token}
-
-4. 接入后拥有的大模型集群调度能力
+3. 接入后拥有的大模型集群调度能力
 • handoff_to_computer_agent：智能选机或向指定远端机器下发任务
 • wait_task_result：同步等待任务产物回传与终端输出
 • list_devices：查询集群中可用的工作节点与运行环境`;
@@ -914,13 +1319,95 @@ ${JSON.stringify(mcpJson, null, 2)}
     });
   }
 
-  // Update quick install command with current origin
-  function updateQuickInstall() {
-    const origin = window.location.origin;
+  // Update quick install command and pairing token management
+  async function generatePairInvitation(maxUses = 1) {
     const quickInstallEl = document.getElementById('node-quick-install-cmd');
-    if (quickInstallEl) {
-      quickInstallEl.textContent = `curl -fsSL ${origin}/download/install.sh | bash -s -- <配对邀请码>`;
+    const badgeEl = document.getElementById('invite-status-badge');
+    const btn = document.getElementById('btn-generate-invite');
+    if (btn) btn.disabled = true;
+
+    try {
+      const res = await fetch('/api/operator/invitations', {
+        method: 'POST',
+        headers: authHeaders(),
+        credentials: 'same-origin',
+        body: JSON.stringify({
+          ttl_minutes: 120,
+          max_uses: parseInt(maxUses, 10) || 1
+        })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const origin = window.location.origin;
+        if (quickInstallEl) {
+          quickInstallEl.textContent = data.install_cmd_bash || data.install_cmd || `curl -fsSL ${origin}/download/install.sh | bash -s -- ${data.token}`;
+        }
+        const quickInstallPs1 = document.getElementById('node-quick-install-cmd-ps1');
+        if (quickInstallPs1) {
+          quickInstallPs1.textContent = data.install_cmd_ps1 || `irm "${origin}/download/install.ps1?token=${data.token}" | iex`;
+        }
+        if (badgeEl) {
+          const expTime = new Date(data.expires_at).toLocaleTimeString();
+          let typeDesc = '🔒 单台专用 (限1次)';
+          if (data.max_uses > 1) {
+            typeDesc = `🌐 一码多用 (限 ${data.max_uses} 台)`;
+          } else if (data.max_uses === -1) {
+            typeDesc = `⚡ 一码多用 (不限台数)`;
+          }
+          badgeEl.textContent = `${typeDesc} | 有效期至 ${expTime}`;
+          badgeEl.style.display = 'inline-block';
+        }
+      } else {
+        const err = await res.text();
+        console.error('Failed to generate invitation:', err);
+      }
+    } catch (e) {
+      console.error('Network error generating invitation:', e);
+    } finally {
+      if (btn) btn.disabled = false;
     }
+  }
+
+  function setupInvitationControls() {
+    const btn = document.getElementById('btn-generate-invite');
+    const select = document.getElementById('invite-mode-select');
+    if (btn && select) {
+      btn.addEventListener('click', () => {
+        generatePairInvitation(select.value);
+      });
+    }
+
+    const tabBash = document.getElementById('tab-install-bash');
+    const tabPs1 = document.getElementById('tab-install-ps1');
+    const boxBash = document.getElementById('box-install-bash');
+    const boxPs1 = document.getElementById('box-install-ps1');
+    const tipBash = document.getElementById('tip-install-bash');
+    const tipPs1 = document.getElementById('tip-install-ps1');
+
+    if (tabBash && tabPs1) {
+      tabBash.addEventListener('click', () => {
+        tabBash.className = 'btn btn-primary btn-sm';
+        tabPs1.className = 'btn btn-secondary btn-sm';
+        if (boxBash) boxBash.style.display = 'flex';
+        if (tipBash) tipBash.style.display = 'block';
+        if (boxPs1) boxPs1.style.display = 'none';
+        if (tipPs1) tipPs1.style.display = 'none';
+      });
+
+      tabPs1.addEventListener('click', () => {
+        tabPs1.className = 'btn btn-primary btn-sm';
+        tabBash.className = 'btn btn-secondary btn-sm';
+        if (boxPs1) boxPs1.style.display = 'flex';
+        if (tipPs1) tipPs1.style.display = 'block';
+        if (boxBash) boxBash.style.display = 'none';
+        if (tipBash) tipBash.style.display = 'none';
+      });
+    }
+  }
+
+  function updateQuickInstall() {
+    setupInvitationControls();
+    generatePairInvitation(1);
   }
 
   // Initialization
@@ -934,6 +1421,7 @@ ${JSON.stringify(mcpJson, null, 2)}
         nodes = await res.json();
         showDashboard();
         renderNodes();
+        updateNodeSelector();
         updateMetrics();
         await fetchTasks();
         connectSSE();
