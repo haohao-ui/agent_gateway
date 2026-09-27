@@ -179,12 +179,23 @@ try {
         Write-Host "  [Environment]::SetEnvironmentVariable('Path', '$Dir;' + [Environment]::GetEnvironmentVariable('Path','User'), 'User')"
     }
 
+    $installUrl = if ($Version -eq 'latest') { "https://github.com/$Repo/releases/latest/download/install.ps1" } else { "https://github.com/$Repo/releases/download/$Version/install.ps1" }
+    $publishedFp = '（本副本未内嵌公钥）'
+    if ($keyFile -and (Test-Path -LiteralPath $keyFile)) { $publishedFp = Get-Sha256 $keyFile }
+
     Write-Host ''
     Write-Host '下一步：'
     Write-Host '  mesh server                          启动网关（首次运行自动生成 CA、证书与数据库）'
     Write-Host '  mesh credential issue --out op.token 签发操作员令牌'
     Write-Host ''
     Write-Host '注意：Windows 未支持用户级后台服务，自启动请使用任务计划程序。'
+    Write-Host ''
+    Write-Host '需要不依赖下载服务器的完整验签保证时，把 <公钥文件> 换成你自己的 release.pub：'
+    Write-Host "  curl.exe -fsSL $installUrl -o install.ps1"
+    Write-Host '  ./install.ps1 -PublicKey <公钥文件>'
+    Write-Host ''
+    Write-Host '本次脚本内嵌公钥指纹（可用 -Fingerprint 固定核对）：'
+    Write-Host "  $publishedFp"
     Write-Host ''
     Write-Host "文档：https://github.com/$Repo/blob/main/docs/INSTALL.md"
 }

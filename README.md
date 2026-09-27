@@ -49,7 +49,13 @@ mesh server
 
 **3. 接入一台工作节点**
 
-先通过独立可信渠道准备 mesh 验证器、发行公钥与网关 CA，按[验证安装流程](docs/INSTALL.md)下载并验签，再用邀请码配对。未配置公钥、签名缺失或摘要不符时停止，不执行下载内容。源码构建也可直接用于配对。
+在控制台「新机器验证安装与配对」里下载 CA 证书、生成邀请码，然后在目标机器执行控制台给出的那一行命令即可：
+
+```sh
+curl --cacert ./ca.crt -fsSL https://<网关>:8443/download/install.sh | MESH_TOKEN='<邀请码>' bash -s -- https://<网关>:8443
+```
+
+脚本用你提供的 CA 验证网关 TLS，下载并比对哈希，完成 mTLS 配对；默认不自动启动节点。需要发行签名验证时额外设置 `MESH_VERIFY_BIN` 与 `MESH_RELEASE_KEY`，详见[安装与部署](docs/INSTALL.md)。
 
 ## 核心能力
 

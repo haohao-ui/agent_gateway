@@ -146,7 +146,7 @@
           <div class="card-header-flex">
             <div>
               <h2 style="font-size: 16px; margin-bottom: 4px;">🚀 新机器验证安装与配对</h2>
-              <p class="form-desc" style="margin-bottom: 0;">支持<strong>一机一码（单台防重放）</strong>或<strong>一码多用（批量部署多台）</strong>。先准备可信 mesh 验证器、发行公钥和网关 CA，再生成邀请码：</p>
+              <p class="form-desc" style="margin-bottom: 0;">支持<strong>一机一码（单台防重放）</strong>或<strong>一码多用（批量部署多台）</strong>。安装三步：<strong>① 下载 CA 证书</strong>到目标机器当前目录，<strong>② 生成邀请码</strong>，<strong>③ 复制下方命令执行</strong>：</p>
             </div>
             <div style="display: flex; gap: 8px; flex-wrap: wrap;">
               <a id="btn-download-mesh" href="/download/mesh" class="btn btn-secondary btn-sm" download title="下载通用二进制 (macOS / Linux)">📥 下载 mesh (macOS/Linux)</a>
@@ -177,20 +177,20 @@
 
             <!-- Bash Command Box -->
             <div id="box-install-bash" style="display: flex; gap: 8px; align-items: center;">
-              <code id="node-quick-install-cmd" style="font-size: 12.5px; color: #a7f3d0; word-break: break-all; background: var(--bg-card); padding: 8px 12px; border-radius: 6px; width: 100%; border: 1px solid var(--border-color);">正在加载 Bash 安装命令...</code>
+              <code id="node-quick-install-cmd" style="font-size: 12.5px; color: #a7f3d0; word-break: break-all; white-space: pre-wrap; background: var(--bg-card); padding: 8px 12px; border-radius: 6px; width: 100%; border: 1px solid var(--border-color);">正在加载 Bash 安装命令...</code>
               <button class="btn btn-primary btn-sm copy-btn" data-target="node-quick-install-cmd" style="white-space: nowrap;">一键复制</button>
             </div>
             <div id="tip-install-bash" style="font-size: 11.5px; color: var(--text-muted); margin-top: 6px;">
-              💡 <strong>macOS / Linux</strong>：在终端 Terminal 中粘贴执行上方单行命令，需设置 MESH_VERIFY_BIN、MESH_RELEASE_KEY、MESH_TLS_CA；验签失败立即停止，配对后手动启动节点。
+              💡 <strong>macOS / Linux</strong>：先在目标机器当前目录保存 <code>ca.crt</code>（点上方「下载 CA 证书」），再粘贴执行上方命令。命令与后续下载都经该 CA 验证网关 TLS；配对后按提示手动启动节点。需要发行签名验证时，额外设置 <code>MESH_VERIFY_BIN</code> 与 <code>MESH_RELEASE_KEY</code>。
             </div>
 
             <!-- PowerShell Command Box -->
             <div id="box-install-ps1" style="display: none; gap: 8px; align-items: center;">
-              <code id="node-quick-install-cmd-ps1" style="font-size: 12.5px; color: #38bdf8; word-break: break-all; background: var(--bg-card); padding: 8px 12px; border-radius: 6px; width: 100%; border: 1px solid var(--border-color);">正在加载 PowerShell 安装命令...</code>
+              <code id="node-quick-install-cmd-ps1" style="font-size: 12.5px; color: #38bdf8; word-break: break-all; white-space: pre-wrap; background: var(--bg-card); padding: 8px 12px; border-radius: 6px; width: 100%; border: 1px solid var(--border-color);">正在加载 PowerShell 安装命令...</code>
               <button class="btn btn-primary btn-sm copy-btn" data-target="node-quick-install-cmd-ps1" style="white-space: nowrap; background: #0284c7;">一键复制</button>
             </div>
             <div id="tip-install-ps1" style="display: none; font-size: 11.5px; color: #7dd3fc; margin-top: 6px;">
-              ⚡ <strong>Windows (PowerShell)</strong>：打开 PowerShell 窗口（普通用户或管理员均可），先设置可信验证器、公钥及 CA 路径；验签失败停止，配对后手动启动节点。
+              ⚡ <strong>Windows (PowerShell)</strong>：先在目标机器当前目录保存 <code>ca.crt</code>，把 <code>install.ps1</code> 保存为文件，再执行上方命令。脚本与后续下载都经该 CA 验证网关 TLS；配对后按提示手动启动节点。
             </div>
           </div>
         </div>

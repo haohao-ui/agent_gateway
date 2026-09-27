@@ -435,8 +435,18 @@ func (s *Server) handleCreateInvitation(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	installCmd := "bash ./install.sh https://<gateway> ./invitation.txt ./node"
-	installCmdPS1 := "./install.ps1 -Server https://<gateway> -TokenFile ./invitation.txt -Dir ./node"
+	scheme := "https"
+	if r.TLS == nil {
+		scheme = "http"
+	}
+	gatewayURL := fmt.Sprintf("%s://%s", scheme, r.Host)
+	// 一键安装：CA 证书由控制台下载到当前目录，脚本与后续下载都经该 CA 验证 TLS。
+	installCmd := fmt.Sprintf(
+		"curl --cacert ./ca.crt -fsSL %s/download/install.sh | MESH_TOKEN='%s' bash -s -- %s",
+		gatewayURL, invitation.Token, gatewayURL)
+	installCmdPS1 := fmt.Sprintf(
+		"$env:MESH_TOKEN='%s'; ./install.ps1 -Server %s -Ca .\\ca.crt",
+		invitation.Token, gatewayURL)
 
 	isMulti := in.MaxUses > 1 || in.MaxUses == -1
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -445,6 +455,7 @@ func (s *Server) handleCreateInvitation(w http.ResponseWriter, r *http.Request) 
 		"max_uses":           invitation.MaxUses,
 		"multi_use":          isMulti,
 		"server_fingerprint": invitation.ServerFingerprint,
+		"gateway_url":        gatewayURL,
 		"install_cmd":        installCmd,
 		"install_cmd_bash":   installCmd,
 		"install_cmd_ps1":    installCmdPS1,

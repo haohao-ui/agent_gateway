@@ -86,31 +86,47 @@ sh install.sh --fingerprint 88bdfc0623fa313e29567c48b1c64fc0cba6f0cb9afe07c890c8
 
 仓库根目录的 `install.sh` / `install.ps1` 未注入指纹（指纹只在发版时写入发布页附带的那份），直接运行仓库副本会明确报错并给出替代用法，不会静默降级。
 
-### 方式一：验证发行包后安装节点
+### 方式一：一键安装并配对节点
 
-发行公钥与验证程序必须独立可信，不能从同一个待验证下载源取得后直接信任。可从已审核源码构建 mesh 验证器，或通过独立可信渠道交付。网关部署签名发行包到 `<data-dir>/dist/`。
+在网关控制台「新机器验证安装与配对」中：**① 点「下载 CA 证书」**，保存到目标机器当前目录为 `ca.crt`；**② 生成邀请码**；**③ 在目标机器执行控制台给出的命令**：
 
-macOS / Linux 先准备可信脚本（仓库 `internal/httpapi/install.sh`）、验证器、公钥、网关 CA，以及私有的 `invitation.txt` 文件：
+```sh
+curl --cacert ./ca.crt -fsSL https://<网关>:8443/download/install.sh | MESH_TOKEN='<邀请码>' bash -s -- https://<网关>:8443
+```
+
+Windows（`curl.exe` 为 Windows 10 1803+ 自带）：
+
+```powershell
+curl.exe --cacert .\ca.crt -fsSL https://<网关>:8443/download/install.ps1 -o install.ps1
+$env:MESH_TOKEN='<邀请码>'; ./install.ps1 -Server https://<网关>:8443 -Ca .\ca.crt
+```
+
+脚本行为：
+
+1. 用你提供的 CA 验证网关 TLS（`--cacert`），**首次连接就已认证**，不盲信网关；
+2. 打印 CA 指纹（DER 的 SHA-256），可与网关终端/控制台显示的值带外核对；
+3. 下载对应平台的 `mesh` 与三份许可声明，比对网关提供的 SHA-256；
+4. 用邀请码完成 mTLS 配对，邀请码只经环境变量或文件传递，**不进入 URL 或 argv**；
+5. 默认安装到 `$HOME/.agent-mesh-node`，**不自动启动节点**；加 `--start` 可配对后直接后台拉起。
+
+常用参数：`--ca`、`--token`、`--token-file`、`--dir`、`--start`。
+
+**校验等级**由脚本明确打印，不掩饰：
+
+| 条件 | 等级 |
+|---|---|
+| 默认 | 经 CA 验证的 HTTPS 通道（信任锚是你手里这份 CA 证书） |
+| 设置 `MESH_VERIFY_BIN` + `MESH_RELEASE_KEY` | 完整验签（独立验证器做发行签名验证，逐文件校验） |
+
+强校验示例（需要自带独立可信的验证器与发行公钥，网关需把签名发行包部署到 `<data-dir>/dist/`）：
 
 ```sh
 export MESH_VERIFY_BIN=/trusted/mesh
 export MESH_RELEASE_KEY=/trusted/release.pub
-export MESH_TLS_CA=/trusted/gateway-ca.crt
-bash ./install.sh https://gateway.example:8443 ./invitation.txt ./node
+bash install.sh https://gateway.example:8443 --ca ./ca.crt --token-file ./invitation.txt --dir ./node
 ```
 
-Windows 使用可信的 `internal/httpapi/install.ps1`：
-
-```powershell
-$env:MESH_VERIFY_BIN = 'C:\trusted\mesh.exe'
-$env:MESH_RELEASE_KEY = 'C:\trusted\release.pub'
-$env:MESH_TLS_CA = 'C:\trusted\gateway-ca.crt'
-./install.ps1 -Server https://gateway.example:8443 -TokenFile ./invitation.txt -Dir ./node
-```
-
-脚本使用已可信的 mesh 验证器执行 HTTPS 下载、Ed25519 清单验签、文件大小/SHA-256/平台校验，并验证 LICENSE、NOTICE、THIRD_PARTY_NOTICES。缺失任何校验材料立即停止，不回退到同源 SHA-256。目标文件存在时拒绝覆盖。邀请码从文件经 stdin 传给配对命令，不进入 URL 或 argv。
-
-配对后需检查 `node.json` 并手动启动节点；脚本不安装系统服务或自动执行 Agent。不要用未验证二进制自己验证自己，也不要把下载脚本通过 `curl | bash` / `irm | iex` 直接执行。
+配对后检查 `node.json`（其中适配器可执行文件是本地配置，**绝不从网络获取**）再启动节点；脚本不安装系统服务、不自动执行 Agent。
 
 ### 方式二：从源码构建（服务端）
 

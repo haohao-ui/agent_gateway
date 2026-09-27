@@ -332,6 +332,15 @@ case ":${PATH}:" in
 	;;
 esac
 
+INSTALL_URL="https://github.com/${REPO}/releases/latest/download/install.sh"
+if [ -n "$VERSION" ] && [ "$VERSION" != latest ]; then
+	INSTALL_URL="https://github.com/${REPO}/releases/download/${VERSION}/install.sh"
+fi
+PUBLISHED_FP='（本副本未内嵌公钥）'
+if [ -f "$TMP/pinned.pub" ]; then
+	PUBLISHED_FP=$(sha256_of "$TMP/pinned.pub")
+fi
+
 cat <<EOF
 
 下一步：
@@ -339,11 +348,15 @@ cat <<EOF
   mesh credential issue --out op.token 签发操作员令牌
   mesh service install --role server   注册为后台服务（macOS launchd / Linux systemd）
 
-需要不依赖下载服务器的完整验签保证时：
-  带外获取发行公钥，然后执行
-  sh install.sh --public-key /trusted/release.pub
-  或使用独立验证器
-  sh install.sh --verifier /trusted/mesh --public-key /trusted/release.pub
+需要不依赖下载服务器的完整验签保证时，把 <公钥文件> 换成你自己的 release.pub：
+  curl -fsSL ${INSTALL_URL} | sh -s -- --public-key <公钥文件>
+
+也可以把脚本保存下来反复使用：
+  curl -fsSLO ${INSTALL_URL}
+  sh install.sh --public-key <公钥文件>
+
+本次脚本内嵌公钥指纹（可用 --fingerprint 固定核对）：
+  ${PUBLISHED_FP}
 
 文档：
   https://github.com/${REPO}/blob/main/docs/INSTALL.md
