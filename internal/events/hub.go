@@ -39,6 +39,7 @@ type Hub struct {
 	subscribers map[chan Event]struct{}
 	bufferSize  int
 	closed      bool
+	done        chan struct{}
 }
 
 // NewHub initializes an event hub with the specified per-subscriber buffer size.
@@ -49,6 +50,7 @@ func NewHub(bufferSize int) *Hub {
 	return &Hub{
 		subscribers: make(map[chan Event]struct{}),
 		bufferSize:  bufferSize,
+		done:        make(chan struct{}),
 	}
 }
 
@@ -58,7 +60,7 @@ func (h *Hub) Subscribe(ctx context.Context) (<-chan Event, func()) {
 	ch := make(chan Event, h.bufferSize)
 
 	h.mu.Lock()
-	if h.closed {
+	if h.closed || len(h.subscribers) >= 256 {
 		h.mu.Unlock()
 		close(ch)
 		return ch, func() {}
@@ -66,22 +68,22 @@ func (h *Hub) Subscribe(ctx context.Context) (<-chan Event, func()) {
 	h.subscribers[ch] = struct{}{}
 	h.mu.Unlock()
 
+	done := make(chan struct{})
 	var once sync.Once
 	cancel := func() {
 		once.Do(func() {
 			h.mu.Lock()
 			delete(h.subscribers, ch)
 			h.mu.Unlock()
-			// Drain remaining events to prevent deadlock on slow consumers before GC
-			for len(ch) > 0 {
-				<-ch
-			}
+			close(done)
 		})
 	}
-
 	go func() {
 		select {
 		case <-ctx.Done():
+			cancel()
+		case <-done:
+		case <-h.done:
 			cancel()
 		}
 	}()
@@ -128,6 +130,7 @@ func (h *Hub) Close() {
 		return
 	}
 	h.closed = true
+	close(h.done)
 
 	for ch := range h.subscribers {
 		close(ch)

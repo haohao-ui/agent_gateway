@@ -28,7 +28,7 @@
         <button type="submit" id="login-submit-btn" class="btn btn-primary btn-block">立即登录</button>
       </form>
       <div class="login-footer">
-        <span>初始管理员密码请查阅网关启动日志或 <code>admin.password</code> 文件</span>
+        <span>初始管理员密码请查阅服务器的 <code>admin.password</code> 文件</span>
       </div>
     </div>
   </div>
@@ -145,8 +145,8 @@
         <div class="card" style="margin-bottom: 20px; background: rgba(56, 189, 248, 0.05); border: 1px solid rgba(56, 189, 248, 0.25);">
           <div class="card-header-flex">
             <div>
-              <h2 style="font-size: 16px; margin-bottom: 4px;">🚀 新机器一键自动配对接入</h2>
-              <p class="form-desc" style="margin-bottom: 0;">支持<strong>一机一码（单台防重放）</strong>或<strong>一码多用（批量部署多台）</strong>。生成后直接复制命令到目标机器终端运行：</p>
+              <h2 style="font-size: 16px; margin-bottom: 4px;">🚀 新机器验证安装与配对</h2>
+              <p class="form-desc" style="margin-bottom: 0;">支持<strong>一机一码（单台防重放）</strong>或<strong>一码多用（批量部署多台）</strong>。先准备可信 mesh 验证器、发行公钥和网关 CA，再生成邀请码：</p>
             </div>
             <div style="display: flex; gap: 8px; flex-wrap: wrap;">
               <a id="btn-download-mesh" href="/download/mesh" class="btn btn-secondary btn-sm" download title="下载通用二进制 (macOS / Linux)">📥 下载 mesh (macOS/Linux)</a>
@@ -181,7 +181,7 @@
               <button class="btn btn-primary btn-sm copy-btn" data-target="node-quick-install-cmd" style="white-space: nowrap;">一键复制</button>
             </div>
             <div id="tip-install-bash" style="font-size: 11.5px; color: var(--text-muted); margin-top: 6px;">
-              💡 <strong>macOS / Linux</strong>：在终端 Terminal 中粘贴执行上方单行命令，将自动探测架构、下载二进制、配置证书并后台启动守护进程。
+              💡 <strong>macOS / Linux</strong>：在终端 Terminal 中粘贴执行上方单行命令，需设置 MESH_VERIFY_BIN、MESH_RELEASE_KEY、MESH_TLS_CA；验签失败立即停止，配对后手动启动节点。
             </div>
 
             <!-- PowerShell Command Box -->
@@ -190,7 +190,7 @@
               <button class="btn btn-primary btn-sm copy-btn" data-target="node-quick-install-cmd-ps1" style="white-space: nowrap; background: #0284c7;">一键复制</button>
             </div>
             <div id="tip-install-ps1" style="display: none; font-size: 11.5px; color: #7dd3fc; margin-top: 6px;">
-              ⚡ <strong>Windows (PowerShell)</strong>：打开 PowerShell 窗口（普通用户或管理员均可），粘贴执行上方一行命令即可全自动安装、配对并静默后台运行。
+              ⚡ <strong>Windows (PowerShell)</strong>：打开 PowerShell 窗口（普通用户或管理员均可），先设置可信验证器、公钥及 CA 路径；验签失败停止，配对后手动启动节点。
             </div>
           </div>
         </div>
@@ -295,7 +295,7 @@
                 <span class="detail-label" style="font-weight: 600; color: var(--primary); font-size: 14px;">🚀 极简免配置 URL（豆包桌面版 / 各类 AI 客户端通用，推荐）</span>
                 <button class="btn btn-primary btn-sm copy-btn" data-target="mcp-full-url" style="font-weight: 600;">📋 一键复制完整服务 URL</button>
               </div>
-              <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 8px;">该 URL 已内置当前管理员凭据。在豆包桌面版或其他客户端中，<strong>直接粘贴此单一 URL 即可，无需手动配置任何请求头（Headers）</strong>：</p>
+              <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 8px;">URL 不包含凭据。请在客户端中单独配置 <strong>Authorization: Bearer 请求头</strong>：</p>
               <div style="display: flex; gap: 8px; align-items: center;">
                 <code id="mcp-full-url" style="font-size: 13px; color: #a7f3d0; word-break: break-all; background: var(--bg-card); padding: 8px 12px; border-radius: 6px; width: 100%; border: 1px solid var(--border-color);">-</code>
               </div>
@@ -343,8 +343,8 @@
             <div style="margin-top: 10px; font-size: 13px; color: var(--text-secondary); line-height: 1.8;">
               <div>• <strong>协议类型</strong>：<code>SSE (Server-Sent Events) / HTTP</code></div>
               <div>• <strong>服务名称</strong>：<code>agent-gateway</code></div>
-              <div>• <strong>服务 URL</strong>（已带 Token，直接粘贴）：<br><code id="mcp-doubao-url" style="word-break: break-all; color: #a7f3d0;">-</code></div>
-              <div>• <strong>自定义 Headers</strong>：可留空（URL 已携带凭据）</div>
+              <div>• <strong>服务 URL</strong>（不含凭据）：<br><code id="mcp-doubao-url" style="word-break: break-all; color: #a7f3d0;">-</code></div>
+              <div>• <strong>自定义 Headers</strong>：填写 Authorization: Bearer &lt;操作员令牌&gt;</div>
             </div>
           </div>
 
@@ -415,6 +415,13 @@
 
       <!-- Tab 7: Settings -->
       <section id="tab-settings" class="tab-pane">
+        <div class="card" style="margin-bottom:20px">
+          <h2>会话与操作员凭据</h2>
+          <p id="credentials-message" class="form-desc">Web 会话有效期 8 小时，操作员凭据默认 24 小时。可随时撤销。</p>
+          <button id="credentials-refresh" class="btn btn-secondary">刷新凭据</button>
+          <div class="table-container"><table class="data-table"><thead><tr><th>凭据 ID</th><th>角色</th><th>到期时间</th><th>状态</th><th>操作</th></tr></thead><tbody id="credentials-body"></tbody></table></div>
+          <button id="credentials-more" class="btn btn-secondary" hidden>加载更多</button>
+        </div>
         <!-- 证书管理卡片 -->
         <div class="card" style="margin-bottom: 20px;">
           <div class="card-header-flex">

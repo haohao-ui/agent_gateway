@@ -16,21 +16,25 @@ type DoctorFunc func(ctx context.Context) any
 
 // handleSSEStreams handles browser and client real-time event subscriptions over Server-Sent Events.
 func (s *Server) handleSSEStreams(w http.ResponseWriter, r *http.Request) {
-	// 1. Authorize: Header Bearer, Query param token, or secure Cookie
-	var currentPrincipal policy.Principal
-	if s.policies != nil {
-		token := extractOperatorToken(r)
-		if token == "" {
-			writeError(w, http.StatusUnauthorized, "unauthorized", "operator token required for event stream")
-			return
-		}
-		p, err := s.policies.Authenticate(r.Context(), token)
-		if err != nil {
-			writeError(w, http.StatusUnauthorized, "unauthorized", "invalid operator credential")
-			return
-		}
-		currentPrincipal = p
+	if r.TLS == nil || s.policies == nil {
+		writeError(w, 401, "unauthorized", "HTTPS operator authentication required")
+		return
 	}
+	token := extractOperatorToken(r)
+	currentPrincipal, err := s.policies.Authenticate(r.Context(), token)
+	if err != nil {
+		writeError(w, 401, "unauthorized", "invalid operator credential")
+		return
+	}
+	lease, err := s.openStream(r.Context(), currentPrincipal.ID, token)
+	if err != nil {
+		w.Header().Set("Retry-After", "1")
+		writeError(w, 429, "stream_limit", "too many streams")
+		return
+	}
+	defer lease.close()
+	r = r.WithContext(lease.ctx)
+	w = &authenticatedStreamWriter{ResponseWriter: w, server: s, token: token, ctx: lease.ctx}
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -51,7 +55,10 @@ func (s *Server) handleSSEStreams(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	// Send initial connected event
-	fmt.Fprintf(w, "event: connected\ndata: {\"status\":\"connected\",\"time\":%q}\n\n", time.Now().UTC().Format(time.RFC3339))
+	_, err = fmt.Fprintf(w, "event: connected\ndata: {\"status\":\"connected\",\"time\":%q}\n\n", time.Now().UTC().Format(time.RFC3339))
+	if err != nil {
+		return
+	}
 	flusher.Flush()
 
 	ticker := time.NewTicker(15 * time.Second)
@@ -71,12 +78,13 @@ func (s *Server) handleSSEStreams(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return
 			}
-			// Scope-based isolation: non-admin operators/viewers only receive events within authorized nodes
-			if s.policies != nil && currentPrincipal.Role != policy.Admin {
-				if evt.NodeID != "" {
-					if err := policy.Authorize(currentPrincipal, policy.ActionTaskRead, evt.NodeID); err != nil {
-						continue // Do not leak events outside the principal's node scope
-					}
+			currentPrincipal, err = s.policies.Authenticate(r.Context(), token)
+			if err != nil {
+				return
+			}
+			if currentPrincipal.Role != policy.Admin {
+				if evt.NodeID == "" || policy.Authorize(currentPrincipal, policy.ActionTaskRead, evt.NodeID) != nil {
+					continue
 				}
 			}
 			payload, err := json.Marshal(evt)

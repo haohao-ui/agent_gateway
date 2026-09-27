@@ -28,7 +28,7 @@ func runCredential(ctx context.Context, args []string) error {
 	dir := cmd.flags.String("data-dir", envString("MESH_DATA_DIR", "./gateway-data"), "gateway data directory")
 	role := cmd.flags.String("role", "admin", "admin, operator, or viewer")
 	nodes := cmd.flags.String("nodes", "", "comma separated node scopes (empty for admin)")
-	ttl := cmd.flags.Duration("ttl", 365*24*time.Hour, "credential lifetime (maximum 365 days)")
+	ttl := cmd.flags.Duration("ttl", 24*time.Hour, "credential lifetime (maximum 24 hours)")
 	output := cmd.flags.String("out", "", "new token file (optional; prints to stdout if omitted)")
 	if err := cmd.flags.Parse(args[1:]); err != nil {
 		return err
@@ -44,10 +44,9 @@ func runCredential(ctx context.Context, args []string) error {
 	}
 	dataDir := *dir
 	if _, err := os.Stat(filepath.Join(dataDir, "policy.sqlite")); err != nil {
-		if _, err2 := os.Stat("/tmp/gateway-server-deploy/policy.sqlite"); err2 == nil {
-			dataDir = "/tmp/gateway-server-deploy"
-		}
+		return fmt.Errorf("open specified gateway credential store: %w", err)
 	}
+
 	store, err := policy.Open(filepath.Join(dataDir, "policy.sqlite"))
 	if err != nil {
 		return err
@@ -56,12 +55,14 @@ func runCredential(ctx context.Context, args []string) error {
 	if args[0] == "revoke" {
 		return store.Revoke(ctx, cmd.flags.Arg(0))
 	}
-	p, token, err := store.Issue(ctx, policy.Role(*role), splitList(*nodes), time.Now().Add(*ttl))
-	if err != nil {
-		return err
+	if *ttl <= 0 || *ttl > 24*time.Hour {
+		return errors.New("credential lifetime must be within 24 hours")
 	}
-
 	if *output == "" {
+		p, token, err := store.Issue(ctx, policy.Role(*role), splitList(*nodes), time.Now().Add(*ttl))
+		if err != nil {
+			return err
+		}
 		fmt.Printf("principal: %s\nrole:      %s\ntoken:     %s\n", p.ID, p.Role, token)
 		return nil
 	}
@@ -78,6 +79,10 @@ func runCredential(ctx context.Context, args []string) error {
 			os.Remove(*output)
 		}
 	}()
+	p, token, err := store.Issue(ctx, policy.Role(*role), splitList(*nodes), time.Now().Add(*ttl))
+	if err != nil {
+		return err
+	}
 	if _, err = file.WriteString(token + "\n"); err == nil {
 		err = file.Sync()
 	}

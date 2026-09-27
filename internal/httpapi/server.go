@@ -15,6 +15,7 @@ package httpapi
 
 import (
 	"context"
+	"crypto/subtle"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -22,6 +23,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"sync"
 	"time"
@@ -79,11 +81,14 @@ type Server struct {
 	doctorFunc DoctorFunc
 	mcpHandler http.Handler
 
-	allowPlainHTTP bool
-	adminPassword  string
-	adminToken     string
-	mcpSessions    sync.Map // sessionID (string) -> expiry time (time.Time)
-	nodeRuntime    sync.Map // nodeID (string) -> NodeRuntimeInfo
+	loginLimiter  *pairLimiter
+	loginGlobal   *pairLimiter
+	streamsMu     sync.Mutex
+	streams       map[string]map[*streamLease]struct{}
+	streamCount   int
+	adminPassword string
+	adminToken    string
+	nodeRuntime   sync.Map // nodeID (string) -> NodeRuntimeInfo
 
 	// pairLimiter bounds unauthenticated /v1/pair attempts per client address.
 	pairLimiter *pairLimiter
@@ -109,12 +114,15 @@ type NodeRuntimeInfo struct {
 // NewServer initializes an HTTP/2 API handler with taskstore and identity CA.
 func NewServer(store *taskstore.Store, ca *identity.CA) *Server {
 	s := &Server{
-		store:       store,
-		ca:          ca,
-		hub:         events.NewHub(128),
-		mux:         http.NewServeMux(),
-		pairLimiter: newPairLimiter(pairRatePerSecond, pairBurst, time.Now),
-		waiters:     make(map[string][]chan struct{}),
+		store:        store,
+		ca:           ca,
+		hub:          events.NewHub(128),
+		mux:          http.NewServeMux(),
+		pairLimiter:  newPairLimiter(pairRatePerSecond, pairBurst, time.Now),
+		loginLimiter: newPairLimiter(1.0/30, 5, time.Now),
+		loginGlobal:  newPairLimiter(1, 30, time.Now),
+		streams:      make(map[string]map[*streamLease]struct{}),
+		waiters:      make(map[string][]chan struct{}),
 	}
 	s.registerRoutes()
 	s.registerOperatorRoutes()
@@ -128,9 +136,9 @@ func (s *Server) SetAdminCredentials(password, token string) {
 	s.adminToken = token
 }
 
-// SetAllowPlainHTTP controls whether operator endpoints can be accessed over unencrypted HTTP (e.g. via --http-addr).
+// SetAllowPlainHTTP is retained for source compatibility. Management always requires TLS.
 func (s *Server) SetAllowPlainHTTP(allow bool) {
-	s.allowPlainHTTP = allow
+	// Deliberately ignored: a listener flag must not relax authentication transport.
 }
 
 // SetDataDir sets the gateway data directory path for diagnostics and reporting.
@@ -173,6 +181,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /ca.crt", s.handleDownloadCA)
 
 	// Download Center for node deployment and skills
+	s.mux.HandleFunc("GET /download/release/{name}", s.handleReleaseFile)
 	s.mux.HandleFunc("GET /download/mesh", s.handleDownloadMesh)
 	s.mux.HandleFunc("GET /download/mesh.sha256", s.handleDownloadMeshSHA256)
 	s.mux.HandleFunc("GET /download/ca.crt", s.handleDownloadCA)
@@ -219,9 +228,16 @@ func (s *Server) handleProbe(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+const webSessionTTL = 8 * time.Hour
+
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
-	if r.TLS == nil && !s.allowPlainHTTP {
-		writeError(w, http.StatusForbidden, "forbidden", "login requires TLS")
+	if r.TLS == nil {
+		writeError(w, 403, "tls_required", "login requires HTTPS")
+		return
+	}
+	if !s.loginGlobal.allow("login") || !s.loginLimiter.allow(clientKey(r)) {
+		w.Header().Set("Retry-After", "30")
+		writeError(w, 429, "rate_limited", "too many login attempts")
 		return
 	}
 	var in struct {
@@ -231,42 +247,63 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if !readJSON(w, r, credentialBodyLimit, &in) {
 		return
 	}
-	expectedPass := s.adminPassword
-	if expectedPass == "" || in.Username != "admin" || in.Password != expectedPass {
-		writeError(w, http.StatusUnauthorized, "unauthorized", "invalid username or password")
+	if s.adminPassword == "" || in.Username != "admin" || subtle.ConstantTimeCompare([]byte(in.Password), []byte(s.adminPassword)) != 1 {
+		writeError(w, 401, "unauthorized", "invalid username or password")
 		return
 	}
-	http.SetCookie(w, &http.Cookie{
-		Name:     "gateway_token",
-		Value:    s.adminToken,
-		Path:     "/",
-		HttpOnly: true, // 加固：禁止前端 JavaScript 访问敏感认证 Cookie，杜绝 XSS 凭据窃取
-		SameSite: http.SameSiteLaxMode,
-		Secure:   r.TLS != nil,
-		MaxAge:   30 * 24 * 3600,
-	})
-	writeJSON(w, http.StatusOK, map[string]any{
-		"status":   "ok",
-		"username": "admin",
-		"version":  protocol.FullVersion(),
-	})
+	if s.policies == nil {
+		writeError(w, 503, "unavailable", "credential store unavailable")
+		return
+	}
+	p, token, err := s.policies.Issue(r.Context(), policy.Admin, nil, time.Now().Add(webSessionTTL))
+	if err != nil {
+		writeError(w, 503, "unavailable", "could not create session")
+		return
+	}
+	http.SetCookie(w, &http.Cookie{Name: "gateway_token", Value: token, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: true, MaxAge: int(webSessionTTL.Seconds())})
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, 200, map[string]any{"status": "ok", "username": "admin", "principal_id": p.ID, "version": protocol.FullVersion()})
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
-	http.SetCookie(w, &http.Cookie{
-		Name:     "gateway_token",
-		Value:    "",
-		Path:     "/",
-		HttpOnly: false,
-		SameSite: http.SameSiteLaxMode,
-		Secure:   r.TLS != nil,
-		MaxAge:   -1,
-	})
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	if r.TLS == nil {
+		writeError(w, 403, "tls_required", "logout requires HTTPS")
+		return
+	}
+	if c, err := r.Cookie("gateway_token"); err == nil && s.policies != nil {
+		if p, err := s.policies.Authenticate(r.Context(), c.Value); err == nil {
+			if err := s.policies.Revoke(r.Context(), p.ID); err != nil {
+				writeError(w, 503, "unavailable", "could not revoke session")
+				return
+			}
+			s.closeStreams(p.ID)
+		}
+	}
+	http.SetCookie(w, &http.Cookie{Name: "gateway_token", Value: "", Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: true, MaxAge: -1})
+	writeJSON(w, 200, map[string]string{"status": "ok"})
 }
 
 func (s *Server) Handler() http.Handler {
-	return s.mux
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.policies != nil && r.TLS == nil {
+			writeError(w, 426, "tls_required", "use the HTTPS listener")
+			return
+		}
+		if r.URL.Query().Has("token") {
+			writeError(w, 400, "query_token_forbidden", "use Authorization: Bearer or a secure session cookie")
+			return
+		}
+		if r.Method != "GET" && r.Method != "HEAD" && r.Method != "OPTIONS" {
+			if origin := r.Header.Get("Origin"); origin != "" {
+				u, err := url.Parse(origin)
+				if err != nil || u.Scheme != "https" || u.Host != r.Host {
+					writeError(w, 403, "origin_forbidden", "cross-origin mutation denied")
+					return
+				}
+			}
+		}
+		s.mux.ServeHTTP(w, r)
+	})
 }
 
 // BuildTLSConfig returns a tls.Config with ALPN h2, server certificates, and mTLS verification.
@@ -881,12 +918,15 @@ func (l *pairLimiter) allow(key string) bool {
 	defer l.mu.Unlock()
 
 	now := l.now()
-	if len(l.buckets) > maxLimiterEntries {
+	if len(l.buckets) >= maxLimiterEntries {
 		l.evictRefilled(now)
 	}
 
 	b, ok := l.buckets[key]
 	if !ok {
+		if len(l.buckets) >= maxLimiterEntries {
+			return false
+		}
 		b = &pairBucket{tokens: l.burst, last: now}
 		l.buckets[key] = b
 	}

@@ -9,7 +9,6 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -344,247 +343,12 @@ func (s *Server) handleDownloadMeshSHA256(w http.ResponseWriter, r *http.Request
 
 // handleDownloadInstallScript serves the one-line bash installer for remote worker nodes.
 func (s *Server) handleDownloadInstallScript(w http.ResponseWriter, r *http.Request) {
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
-	}
-	downloadURL := fmt.Sprintf("%s://%s", scheme, r.Host)
-
-	host := r.Host
-	if h, _, err := net.SplitHostPort(host); err == nil && h != "" {
-		host = h
-	}
-	tlsURL := fmt.Sprintf("https://%s:8443", host)
-
-	script := fmt.Sprintf(`#!/usr/bin/env bash
-set -euo pipefail
-
-# Agent Mesh Node One-Line Auto Installer
-# Assets Download URL: %[1]s
-# Gateway TLS Server:  %[2]s
-
-DOWNLOAD_URL="%[1]s"
-GATEWAY_TLS_URL="%[2]s"
-TOKEN="${1:-}"
-DIR="${2:-$HOME/.agent-mesh-node}"
-
-if [ -z "$TOKEN" ]; then
-    echo "=========================================================="
-    echo "❌ 缺少配对邀请码 (Invitation Token)"
-    echo "用法: curl -fsSL $DOWNLOAD_URL/download/install.sh | bash -s -- <INVITATION_TOKEN> [INSTALL_DIR]"
-    echo "请在网关控制台获取一个有效的配对邀请码后重试。"
-    echo "=========================================================="
-    exit 1
-fi
-
-echo "=========================================================="
-echo "🚀 开始安装 Agent Mesh 节点工作进程..."
-echo "下载端点: $DOWNLOAD_URL"
-echo "网关服务: $GATEWAY_TLS_URL"
-echo "安装目录: $DIR"
-echo "=========================================================="
-
-mkdir -p "$DIR"
-cd "$DIR"
-
-echo "1. 探测主机操作系统与架构..."
-OS=$(uname -s | tr '[:upper:]' '[:lower:]')
-ARCH=$(uname -m)
-case "$ARCH" in
-    x86_64) ARCH="amd64" ;;
-    aarch64|arm64) ARCH="arm64" ;;
-esac
-echo "   Detected: ${OS}-${ARCH}"
-
-echo "2. 下载网关 CA 证书..."
-curl -fsSL "$DOWNLOAD_URL/download/ca.crt" -o ca.crt
-
-echo "3. 下载 mesh 节点二进制程序..."
-curl -fsSL "$DOWNLOAD_URL/download/mesh?arch=${OS}-${ARCH}" -o mesh
-chmod +x mesh
-
-echo "4. 校验 mesh 程序完整性 (SHA-256 防篡改)..."
-EXPECTED_HASH=$(curl -fsSL "$DOWNLOAD_URL/download/mesh.sha256?arch=${OS}-${ARCH}" 2>/dev/null | awk '{print $1}' || true)
-if [ -n "$EXPECTED_HASH" ]; then
-    ACTUAL_HASH=""
-    if command -v sha256sum >/dev/null 2>&1; then
-        ACTUAL_HASH=$(sha256sum mesh | awk '{print $1}')
-    elif command -v shasum >/dev/null 2>&1; then
-        ACTUAL_HASH=$(shasum -a 256 mesh | awk '{print $1}')
-    fi
-
-    if [ -n "$ACTUAL_HASH" ]; then
-        if [ "$ACTUAL_HASH" != "$EXPECTED_HASH" ]; then
-            echo "❌ 二进制完整性校验失败！期望值: $EXPECTED_HASH，计算值: $ACTUAL_HASH" >&2
-            echo "疑似遭遇网络中间人篡改或文件损坏，终止安装并立即清除可执行程序！" >&2
-            rm -f mesh
-            exit 1
-        fi
-        echo "   ✅ SHA-256 完整性校验通过: ${ACTUAL_HASH}"
-    else
-        echo "   ⚠️ 未找到本地 sha256 工具，跳过本地计算"
-    fi
-else
-    echo "   ⚠️ 未能从网关获取校验值"
-fi
-
-echo "5. 执行节点安全配对..."
-./mesh pair --server "$GATEWAY_TLS_URL" --ca ca.crt --token "$TOKEN" --dir "$DIR"
-
-echo "=========================================================="
-echo "✅ 节点已成功与网关完成证书配对！"
-echo ""
-echo "正在后台启动 mesh node 工作循环..."
-nohup "$DIR/mesh" node --dir "$DIR" --config "$DIR/node.json" > "$DIR/node.log" 2>&1 &
-echo "启动成功！后台进程 PID: $!"
-echo "查看运行日志: tail -f $DIR/node.log"
-echo "=========================================================="
-`, downloadURL, tlsURL)
-
 	w.Header().Set("Content-Type", "text/x-shellscript; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(script))
+	_, _ = w.Write([]byte(signedInstallerSH))
 }
-
-// handleDownloadInstallPowerShell serves the PowerShell one-line installer for Windows worker nodes.
 func (s *Server) handleDownloadInstallPowerShell(w http.ResponseWriter, r *http.Request) {
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
-	}
-	downloadURL := fmt.Sprintf("%s://%s", scheme, r.Host)
-
-	host := r.Host
-	if h, _, err := net.SplitHostPort(host); err == nil && h != "" {
-		host = h
-	}
-	tlsURL := fmt.Sprintf("https://%s:8443", host)
-	token := r.URL.Query().Get("token")
-
-	safeToken := strings.ReplaceAll(token, "'", "''")
-
-	script := fmt.Sprintf(`param(
-    [Parameter(Position=0)]
-    [string]$Token = '%[3]s',
-
-    [Parameter(Position=1)]
-    [string]$Dir = "$HOME\.agent-mesh-node"
-)
-
-$ErrorActionPreference = "Stop"
-
-# Agent Mesh Node One-Line Auto Installer (PowerShell for Windows)
-# Assets Download URL: %[1]s
-# Gateway TLS Server:  %[2]s
-
-$DOWNLOAD_URL = "%[1]s"
-$GATEWAY_TLS_URL = "%[2]s"
-
-if (-not $Token -or $Token -eq "{{TOKEN}}") {
-    Write-Host "==========================================================" -ForegroundColor Red
-    Write-Host "❌ 缺少配对邀请码 (Invitation Token)" -ForegroundColor Red
-    Write-Host "用法:" -ForegroundColor Yellow
-    Write-Host "  irm ""$DOWNLOAD_URL/download/install.ps1?token=<邀请码>"" | iex" -ForegroundColor White
-    Write-Host "或:" -ForegroundColor Yellow
-    Write-Host "  & ([scriptblock]::Create((irm ""$DOWNLOAD_URL/download/install.ps1""))) -Token ""<邀请码>""" -ForegroundColor White
-    Write-Host "请在网关控制台获取一个有效的配对邀请码后重试。" -ForegroundColor Yellow
-    Write-Host "==========================================================" -ForegroundColor Red
-    Exit 1
-}
-
-Write-Host "==========================================================" -ForegroundColor Cyan
-Write-Host "🚀 开始安装 Agent Mesh Windows 节点工作进程..." -ForegroundColor Green
-Write-Host "下载端点: $DOWNLOAD_URL"
-Write-Host "网关服务: $GATEWAY_TLS_URL"
-Write-Host "安装目录: $Dir"
-Write-Host "==========================================================" -ForegroundColor Cyan
-
-# 1. 创建安装目录
-if (-not (Test-Path -Path $Dir)) {
-    New-Item -ItemType Directory -Path $Dir -Force | Out-Null
-}
-$resolvedDir = (Resolve-Path -Path $Dir).Path
-Set-Location -Path $resolvedDir
-
-# 2. 探测系统架构
-$arch = $env:PROCESSOR_ARCHITECTURE.ToLower()
-$meshArch = "windows-amd64"
-if ($arch -eq "arm64") {
-    $meshArch = "windows-arm64"
-}
-Write-Host "1. 探测主机操作系统与架构: Windows (${meshArch})" -ForegroundColor Cyan
-
-# 3. 下载网关 CA 证书
-Write-Host "2. 正在下载网关 CA 证书..." -ForegroundColor Cyan
-$caFile = Join-Path $resolvedDir "ca.crt"
-[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
-Invoke-RestMethod -Uri "$DOWNLOAD_URL/download/ca.crt" -OutFile $caFile
-
-# 4. 停止可能运行中的旧进程并下载 mesh.exe
-Write-Host "3. 正在下载 mesh.exe 节点程序 (${meshArch})..." -ForegroundColor Cyan
-Get-Process -Name "mesh" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-Start-Sleep -Milliseconds 500
-
-$exeFile = Join-Path $resolvedDir "mesh.exe"
-Invoke-RestMethod -Uri "$DOWNLOAD_URL/download/mesh?arch=$meshArch" -OutFile $exeFile
-
-# 5. 校验 SHA-256 完整性 (防篡改)
-Write-Host "4. 正在校验 mesh.exe 完整性 (SHA-256)..." -ForegroundColor Cyan
-try {
-    $rawHashResp = (Invoke-RestMethod -Uri "$DOWNLOAD_URL/download/mesh.sha256?arch=$meshArch").Trim()
-    $expectedHash = ($rawHashResp -split '\s+')[0].ToLower()
-    $actualHash = (Get-FileHash -Path $exeFile -Algorithm SHA256).Hash.ToLower()
-
-    if ($expectedHash -and $actualHash -ne $expectedHash) {
-        Write-Host "❌ 二进制完整性校验失败！期望: $expectedHash，实际: $actualHash" -ForegroundColor Red
-        Write-Host "疑似遭遇中间人篡改或下载损坏，已紧急终止安装并移除文件。" -ForegroundColor Red
-        Remove-Item -Path $exeFile -Force -ErrorAction SilentlyContinue
-        Exit 1
-    }
-    Write-Host "   ✅ SHA-256 签名校验通过: $actualHash" -ForegroundColor Green
-} catch {
-    Write-Host "⚠️ 获取或比对签名校验值异常: $_ ，继续执行" -ForegroundColor Yellow
-}
-
-# 6. 执行节点安全证书配对
-Write-Host "5. 正在执行节点安全证书配对..." -ForegroundColor Cyan
-& $exeFile pair --server $GATEWAY_TLS_URL --ca $caFile --token $Token --dir $resolvedDir
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "❌ 节点证书配对失败，请检查邀请码或网关端口与证书连接。" -ForegroundColor Red
-    Exit $LASTEXITCODE
-}
-
-Write-Host "==========================================================" -ForegroundColor Green
-Write-Host "✅ 节点已成功与网关完成安全证书配对！" -ForegroundColor Green
-Write-Host ""
-Write-Host "正在后台启动 mesh node 工作循环..." -ForegroundColor Cyan
-
-# 7. 后台拉起节点工作进程 (静默无黑框运行)
-$logFile = Join-Path $resolvedDir "node.log"
-$errFile = Join-Path $resolvedDir "node.err.log"
-$cfgFile = Join-Path $resolvedDir "node.json"
-
-$startParams = @{
-    FilePath = $exeFile
-    ArgumentList = @("node", "--dir", $resolvedDir, "--config", $cfgFile)
-    WorkingDirectory = $resolvedDir
-    RedirectStandardOutput = $logFile
-    RedirectStandardError = $errFile
-    WindowStyle = "Hidden"
-    PassThru = $true
-}
-$proc = Start-Process @startParams
-
-Write-Host "🎉 节点启动成功！后台进程 PID: $($proc.Id)" -ForegroundColor Green
-Write-Host "运行日志文件: $logFile" -ForegroundColor Yellow
-Write-Host "查看实时日志命令 (PowerShell):" -ForegroundColor Gray
-Write-Host "  Get-Content -Path '$logFile' -Wait" -ForegroundColor White
-Write-Host "==========================================================" -ForegroundColor Green
-`, downloadURL, tlsURL, safeToken)
-
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(script))
+	_, _ = w.Write([]byte(signedInstallerPS))
 }
 
 func extractOperatorToken(r *http.Request) string {
@@ -594,9 +358,6 @@ func extractOperatorToken(r *http.Request) string {
 		if len(fields) == 2 && strings.EqualFold(fields[0], "Bearer") && len(fields[1]) <= 1024 {
 			return fields[1]
 		}
-	}
-	if q := r.URL.Query().Get("token"); q != "" && len(q) <= 1024 {
-		return q
 	}
 	if c, err := r.Cookie("gateway_token"); err == nil && c.Value != "" && len(c.Value) <= 1024 {
 		return c.Value
@@ -651,12 +412,8 @@ func (s *Server) handleCreateInvitation(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
-	}
-	installCmd := fmt.Sprintf("curl -fsSL %s://%s/download/install.sh | bash -s -- %s", scheme, r.Host, invitation.Token)
-	installCmdPS1 := fmt.Sprintf("irm \"%s://%s/download/install.ps1?token=%s\" | iex", scheme, r.Host, invitation.Token)
+	installCmd := "bash ./install.sh https://<gateway> ./invitation.txt ./node"
+	installCmdPS1 := "./install.ps1 -Server https://<gateway> -TokenFile ./invitation.txt -Dir ./node"
 
 	isMulti := in.MaxUses > 1 || in.MaxUses == -1
 	writeJSON(w, http.StatusOK, map[string]any{

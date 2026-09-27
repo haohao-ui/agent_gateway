@@ -43,19 +43,13 @@
   const doctorResults = document.getElementById('doctor-results');
 
   // Token & Auth management
-  const urlParams = new URLSearchParams(window.location.search);
-  if (urlParams.has('token')) {
-    localStorage.setItem('agent_gateway_token', urlParams.get('token'));
+  // Remove legacy browser-stored tokens; web authentication uses HttpOnly cookies.
+  localStorage.removeItem('agent_gateway_token');
+  if (new URLSearchParams(window.location.search).has('token')) {
     window.history.replaceState({}, document.title, window.location.pathname);
   }
-  let operatorToken = localStorage.getItem('agent_gateway_token') || '';
-
   function authHeaders(extra = {}) {
-    const headers = { 'Content-Type': 'application/json', ...extra };
-    if (operatorToken) {
-      headers['Authorization'] = `Bearer ${operatorToken}`;
-    }
-    return headers;
+    return { 'Content-Type': 'application/json', ...extra };
   }
 
   function showLogin(errMsg) {
@@ -147,7 +141,7 @@
           loadTLSStatus();
           updateQuickInstall();
         } else {
-          loginError.textContent = '账号或密码错误（管理员初始密码见网关启动日志或 admin.password 文件）';
+          loginError.textContent = res.status === 429 ? '登录尝试过于频繁，请稍后重试。' : '账号或密码错误（初始密码见服务器 admin.password 文件）';
           loginError.classList.remove('hidden');
         }
       } catch (err) {
@@ -162,7 +156,6 @@
       try {
         await fetch('/api/logout', { method: 'POST', credentials: 'same-origin' });
       } catch (e) {}
-      operatorToken = '';
       localStorage.removeItem('agent_gateway_token');
       if (globalPollTimer) { clearInterval(globalPollTimer); globalPollTimer = null; }
       if (uptimeTicker) { clearInterval(uptimeTicker); uptimeTicker = null; }
@@ -1045,9 +1038,7 @@
       activeSSE = null;
     }
 
-    const sseUrl = operatorToken
-      ? `/v1/events/stream?token=${encodeURIComponent(operatorToken)}`
-      : '/v1/events/stream';
+    const sseUrl = '/v1/events/stream';
     const sse = new EventSource(sseUrl);
     activeSSE = sse;
 
@@ -1121,8 +1112,7 @@
   function updateMCPDocs() {
     const origin = window.location.origin;
     const mcpUrl = `${origin}/mcp`;
-    const token = operatorToken || localStorage.getItem('agent_gateway_token') || '';
-    const fullUrl = token ? `${mcpUrl}?token=${token}` : mcpUrl;
+    const fullUrl = mcpUrl;
 
     const elFullUrl = document.getElementById('mcp-full-url');
     const elEndpoint = document.getElementById('mcp-endpoint-url');
@@ -1133,13 +1123,14 @@
 
     if (elFullUrl) elFullUrl.textContent = fullUrl;
     if (elEndpoint) elEndpoint.textContent = mcpUrl;
-    if (elToken) elToken.textContent = token || '(请先登录获取 Token)';
+    if (elToken) elToken.textContent = '使用 mesh credential issue --out 签发独立凭据';
     if (elDoubaoUrl) elDoubaoUrl.textContent = fullUrl;
 
     const mcpJson = {
       mcpServers: {
         "agent-gateway": {
-          url: fullUrl
+          url: fullUrl,
+          headers: { Authorization: 'Bearer <独立签发的操作员令牌>' }
         }
       }
     };
@@ -1149,11 +1140,11 @@
 你好！请将我们的统一 Agent 网关接入你的 AI 编程助手（豆包桌面版 / Codex / Cursor / Claude Desktop），接入后即可直接在本地调度远端集群节点执行编码与构建：
 
 1. 豆包桌面版 & 通用代理工具接入（极简推荐）
-直接复制这一个完整 URL，粘贴到客户端的【服务 URL / Server URL】即可，无需配置任何 Headers：
+将 URL 填入客户端，并单独配置 Authorization: Bearer 请求头：
 ${fullUrl}
 
 2. Codex / Cursor / Claude Desktop 接入
-在 mcpServers 配置中添加以下配置（一行 URL 自动带鉴权）：
+在 mcpServers 配置中添加以下配置（将占位符替换为独立签发的短期凭据）：
 ${JSON.stringify(mcpJson, null, 2)}
 
 3. 接入后拥有的大模型集群调度能力
@@ -1163,6 +1154,45 @@ ${JSON.stringify(mcpJson, null, 2)}
 
     if (elPrompt) elPrompt.textContent = promptText;
   }
+
+
+  let credentialCursor = '';
+  async function loadCredentials(append = false) {
+    const tbody = document.getElementById('credentials-body');
+    const message = document.getElementById('credentials-message');
+    try {
+      const res = await fetch('/v1/operator/credentials' + (append && credentialCursor ? '?after=' + encodeURIComponent(credentialCursor) : ''), { headers: authHeaders() });
+      if (res.status === 401) { showLogin('会话已过期或被撤销，请重新登录。'); return; }
+      if (!res.ok) throw new Error(res.status === 403 ? '只有管理员可以管理凭据。' : '无法加载凭据');
+      const data = await res.json();
+      if (!append) tbody.replaceChildren();
+      for (const item of data.credentials) {
+        const row = document.createElement('tr');
+        const active = !item.revoked_at && Date.parse(item.expires_at) > Date.now();
+        const values = [item.id + (item.id === data.current_principal_id ? '（当前会话）' : ''), item.role, new Date(item.expires_at).toLocaleString(), item.revoked_at ? '已撤销' : active ? '有效' : '已过期'];
+        for (const value of values) { const cell = document.createElement('td'); cell.textContent = value; row.appendChild(cell); }
+        const actions = document.createElement('td');
+        const button = document.createElement('button');
+        button.className = 'btn btn-secondary btn-sm'; button.textContent = '撤销'; button.disabled = !active;
+        button.addEventListener('click', async () => {
+          button.disabled = true;
+          try {
+            const result = await fetch('/v1/operator/credentials/' + encodeURIComponent(item.id) + '/revoke', {method:'POST',headers:authHeaders()});
+            if (!result.ok) throw new Error('撤销失败，请刷新后重试。');
+            if (item.id === data.current_principal_id) { if (activeSSE) activeSSE.close(); showLogin('当前会话已撤销。'); }
+            else await loadCredentials();
+          } catch (err) { message.textContent = err.message; button.disabled = false; }
+        });
+        actions.appendChild(button); row.appendChild(actions); tbody.appendChild(row);
+      }
+      credentialCursor = data.next_cursor;
+      document.getElementById('credentials-more').hidden = !credentialCursor;
+      message.textContent = '撤销后新请求立即被拒绝，已建立的事件流也会断开。';
+    } catch (err) { message.textContent = err.message; }
+  }
+  document.getElementById('credentials-refresh').addEventListener('click', () => loadCredentials());
+  document.getElementById('credentials-more').addEventListener('click', () => loadCredentials(true));
+  document.querySelector('[data-tab="tab-settings"]').addEventListener('click', () => loadCredentials());
 
   // Copy functionality
   document.addEventListener('click', (e) => {
@@ -1340,11 +1370,11 @@ ${JSON.stringify(mcpJson, null, 2)}
         const data = await res.json();
         const origin = window.location.origin;
         if (quickInstallEl) {
-          quickInstallEl.textContent = data.install_cmd_bash || data.install_cmd || `curl -fsSL ${origin}/download/install.sh | bash -s -- ${data.token}`;
+          quickInstallEl.textContent = `将邀请码保存到 invitation.txt：${data.token}\n完成可信验证器、公钥和 CA 配置后运行：\nbash ./install.sh "${origin}" ./invitation.txt ./node`;
         }
         const quickInstallPs1 = document.getElementById('node-quick-install-cmd-ps1');
         if (quickInstallPs1) {
-          quickInstallPs1.textContent = data.install_cmd_ps1 || `irm "${origin}/download/install.ps1?token=${data.token}" | iex`;
+          quickInstallPs1.textContent = `将邀请码保存到 invitation.txt：${data.token}\n完成可信验证器、公钥和 CA 配置后运行：\n./install.ps1 -Server "${origin}" -TokenFile ./invitation.txt -Dir ./node`;
         }
         if (badgeEl) {
           const expTime = new Date(data.expires_at).toLocaleTimeString();

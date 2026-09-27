@@ -1,0 +1,11 @@
+Agent Gateway
+Copyright 2026 haohao-ui
+
+Licensed under the Apache License, Version 2.0. See LICENSE.
+
+This distribution includes third-party software. Full upstream license and
+notice texts, with module versions, are provided in THIRD_PARTY_NOTICES.
+Go runtime and vendored standard-library component notices are included there.
+
+Distributors must retain LICENSE, NOTICE and THIRD_PARTY_NOTICES with binaries.
+The release manifest includes authenticated hashes for all three files.

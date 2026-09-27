@@ -3,6 +3,7 @@ package httpapi_test
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
@@ -71,11 +72,13 @@ func TestCommercialMCPWireAuthorization(t *testing.T) {
 			ts.TLS = cfg
 			ts.StartTLS()
 			defer ts.Close()
+			httpClient := ts.Client()
+			httpClient.Transport = authRoundTripper{base: httpClient.Transport, token: token}
 			var transport official.Transport
 			if kind == "sse" {
-				transport = &official.SSEClientTransport{Endpoint: ts.URL + "/mcp?token=" + token, HTTPClient: ts.Client()}
+				transport = &official.SSEClientTransport{Endpoint: ts.URL + "/mcp", HTTPClient: httpClient}
 			} else {
-				transport = &official.StreamableClientTransport{Endpoint: ts.URL + "/mcp?token=" + token, HTTPClient: ts.Client()}
+				transport = &official.StreamableClientTransport{Endpoint: ts.URL + "/mcp", HTTPClient: httpClient}
 			}
 			client := official.NewClient(&official.Implementation{Name: "commercial-audit", Version: "1"}, nil)
 			session, err := client.Connect(ctx, transport, nil)
@@ -109,4 +112,15 @@ func TestCommercialMCPWireAuthorization(t *testing.T) {
 			}
 		})
 	}
+}
+
+type authRoundTripper struct {
+	base  http.RoundTripper
+	token string
+}
+
+func (a authRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) {
+	r = r.Clone(r.Context())
+	r.Header.Set("Authorization", "Bearer "+a.token)
+	return a.base.RoundTrip(r)
 }

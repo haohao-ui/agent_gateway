@@ -208,7 +208,7 @@ func TestSecureUnknownCertificateAndPlainHTTP(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer "+issueRole(t, s, policy.Admin))
 	rec := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, req)
-	if rec.Code != 401 {
+	if rec.Code != 426 {
 		t.Fatalf("plain HTTP accepted: %d", rec.Code)
 	}
 	if _, err := NewSecureServer(s.store, ca, nil, s.policies); err == nil {

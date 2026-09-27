@@ -14,6 +14,7 @@ import (
 
 	"agent-gateway/internal/events"
 	"agent-gateway/internal/identity"
+	"agent-gateway/internal/policy"
 	"agent-gateway/internal/protocol"
 	"agent-gateway/internal/taskstore"
 )
@@ -94,21 +95,8 @@ func TestWebUI_StaticAssets(t *testing.T) {
 }
 
 func TestSSE_StreamSubscriptionAndEvents(t *testing.T) {
-	dir := t.TempDir()
-	store, err := taskstore.Open(filepath.Join(dir, "tasks.sqlite"))
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer store.Close()
-
-	ca, err := identity.LoadOrGenerateCA(dir)
-	if err != nil {
-		t.Fatalf("create ca: %v", err)
-	}
-
-	api := NewServer(store, ca)
-	server := httptest.NewServer(api.Handler())
-	defer server.Close()
+	api, server, _ := secureFixture(t)
+	token := issueRole(t, api, policy.Admin)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -118,7 +106,8 @@ func TestSSE_StreamSubscriptionAndEvents(t *testing.T) {
 		t.Fatalf("new request: %v", err)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := server.Client().Do(req)
 	if err != nil {
 		t.Fatalf("connect sse: %v", err)
 	}

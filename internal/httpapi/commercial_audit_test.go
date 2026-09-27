@@ -168,13 +168,13 @@ func TestCommercialMCPSessionRace(t *testing.T) {
 	s, _, _ := secureFixture(t)
 	token := issueRole(t, s, policy.Admin)
 	s.SetMCPHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) }))
-	s.mcpSessions.Store("audit-shared-session", &mcpSessionEntry{token: token, expiresAt: time.Now().Add(time.Minute)})
 	var wg sync.WaitGroup
 	for i := 0; i < 20; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			r := httptest.NewRequest("POST", "https://gateway/mcp?sessionid=audit-shared-session", nil)
+			r.Header.Set("Authorization", "Bearer "+token)
 			s.handleMCP(httptest.NewRecorder(), r)
 		}()
 	}

@@ -27,6 +27,7 @@ usage:
 [Control Plane / Gateway]
   server [flags]                  run the gateway: pairing, mTLS task API, WebUI and /mcp
   invite [flags]                  mint another pairing invitation for a running gateway
+  release keygen|sign|verify|fetch manage signed distributions
   credential issue|revoke         manage operator credentials locally
   device list|revoke              list or revoke enrolled devices
 
@@ -61,6 +62,8 @@ func main() {
 
 	var err error
 	switch os.Args[1] {
+	case "release":
+		err = runRelease(ctx, os.Args[2:])
 	case "server":
 		err = runServer(ctx, os.Args[2:])
 	case "invite":

@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	"agent-gateway/internal/devicestore"
@@ -62,29 +61,11 @@ const principalContextKey contextKey = "principal"
 
 func (s *Server) requireOperator(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if (r.TLS == nil && !s.allowPlainHTTP) || s.policies == nil {
+		if r.TLS == nil || s.policies == nil {
 			writeError(w, 401, "unauthorized", "HTTPS operator authentication required")
 			return
 		}
-		token := ""
-		headers := r.Header.Values("Authorization")
-		if len(headers) == 1 {
-			fields := strings.Fields(headers[0])
-			if len(fields) == 2 && strings.EqualFold(fields[0], "Bearer") && len(fields[1]) <= 1024 {
-				token = fields[1]
-			}
-		}
-		if token == "" {
-			qToken := r.URL.Query().Get("token")
-			if qToken != "" && len(qToken) <= 1024 {
-				token = qToken
-			}
-		}
-		if token == "" {
-			if c, err := r.Cookie("gateway_token"); err == nil && c.Value != "" && len(c.Value) <= 1024 {
-				token = c.Value
-			}
-		}
+		token := extractOperatorToken(r)
 		if token == "" {
 			writeError(w, 401, "unauthorized", "operator credential required")
 			return
@@ -102,6 +83,8 @@ func operatorPrincipal(r *http.Request) policy.Principal {
 	return p
 }
 func (s *Server) registerOperatorRoutes() {
+	s.mux.HandleFunc("GET /v1/operator/credentials", s.requireOperator(s.listCredentials))
+	s.mux.HandleFunc("POST /v1/operator/credentials/{id}/revoke", s.requireOperator(s.revokeCredential))
 	s.mux.HandleFunc("POST /v1/operator/tasks/submit", s.requireOperator(s.operatorSubmit))
 	s.mux.HandleFunc("GET /v1/operator/tasks/{id}", s.requireOperator(s.operatorGet))
 	s.mux.HandleFunc("GET /v1/operator/tasks/{id}/wait", s.requireOperator(s.operatorWait))

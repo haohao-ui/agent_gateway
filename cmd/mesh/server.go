@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -117,6 +118,7 @@ func serveGateway(ctx context.Context, opts gatewayOptions, onReady func(gateway
 	if err != nil {
 		return err
 	}
+	defer api.Hub().Close()
 	api.SetDataDir(opts.DataDir)
 	api.SetDoctorFunc(func(ctx context.Context) any {
 		return doctor.DiagnoseServer(ctx, opts.DataDir)
@@ -146,28 +148,32 @@ func serveGateway(ctx context.Context, opts gatewayOptions, onReady func(gateway
 		return fmt.Errorf("listen on %s: %w", opts.Addr, err)
 	}
 
+	defer listener.Close()
 	var (
 		httpListener net.Listener
 		httpServer   *http.Server
 	)
 	if opts.HTTPAddr != "" {
-		api.SetAllowPlainHTTP(true)
+		// HTTP is an informational rejection listener; it never permits credentials.
 		var err error
 		httpListener, err = net.Listen("tcp", opts.HTTPAddr)
 		if err != nil {
 			_ = listener.Close()
 			return fmt.Errorf("listen http on %s: %w", opts.HTTPAddr, err)
 		}
+		defer httpListener.Close()
 		httpServer = &http.Server{
 			Handler:           api.Handler(),
+			BaseContext:       func(net.Listener) context.Context { return ctx },
 			ReadHeaderTimeout: serverReadTimeout,
 			IdleTimeout:       serverIdleTimeout,
 		}
 	}
 
 	server := &http.Server{
-		Handler:   api.Handler(),
-		TLSConfig: tlsConfig,
+		Handler:     api.Handler(),
+		BaseContext: func(net.Listener) context.Context { return ctx },
+		TLSConfig:   tlsConfig,
 		// ReadHeaderTimeout bounds a slow client's header phase; IdleTimeout
 		// reclaims dead connections. There is deliberately no WriteTimeout: a
 		// claim long poll is supposed to hold the response open, and it ends on
@@ -176,8 +182,14 @@ func serveGateway(ctx context.Context, opts gatewayOptions, onReady func(gateway
 		IdleTimeout:       serverIdleTimeout,
 	}
 
+	if err := policies.LimitLifetime(ctx, 24*time.Hour); err != nil {
+		return fmt.Errorf("limit legacy credential lifetime: %w", err)
+	}
 	adminToken := ensureAdminToken(ctx, opts.DataDir, policies, opts.Log)
 	adminPass := ensureAdminPassword(opts.DataDir, opts.Log)
+	if adminToken == "" || adminPass == "" {
+		return errors.New("administrator credentials could not be initialized")
+	}
 	api.SetAdminCredentials(adminPass, adminToken)
 
 	info := gatewayInfo{
@@ -199,6 +211,32 @@ func serveGateway(ctx context.Context, opts gatewayOptions, onReady func(gateway
 			return fmt.Errorf("generate an invitation: %w", err)
 		}
 		info.Invitations = append(info.Invitations, invitation)
+	}
+
+	if len(info.Invitations) > 0 {
+		raw, err := json.Marshal(info.Invitations)
+		if err != nil {
+			return err
+		}
+		path := filepath.Join(opts.DataDir, "startup-invitations.json")
+		f, err := os.CreateTemp(opts.DataDir, ".invitations-*")
+		if err != nil {
+			return err
+		}
+		defer os.Remove(f.Name())
+		if _, err = f.Write(raw); err == nil {
+			err = f.Sync()
+		}
+		closeErr := f.Close()
+		if err != nil {
+			return err
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+		if err = os.Rename(f.Name(), path); err != nil {
+			return err
+		}
 	}
 
 	// The store has no background goroutine of its own: whoever owns the
@@ -293,20 +331,21 @@ func ensureAdminToken(ctx context.Context, dataDir string, policies *policy.Stor
 			}
 		}
 	}
-	_, tok, err := policies.Issue(ctx, policy.Admin, nil, time.Now().Add(365*24*time.Hour))
+	_, tok, err := policies.Issue(ctx, policy.Admin, nil, time.Now().Add(24*time.Hour))
 	if err != nil {
 		log.Warn("failed to issue default admin token", "error", err)
 		return ""
 	}
 	if err := os.WriteFile(tokenPath, []byte(tok+"\n"), 0600); err != nil {
 		log.Warn("failed to save admin token file", "error", err)
+		return ""
 	}
 	return tok
 }
 
 // ensureAdminPassword loads, configures or randomly generates a persistent secure password for admin login.
 func ensureAdminPassword(dataDir string, log *slog.Logger) string {
-	pass := os.Getenv("GATEWAY_ADMIN_PASSWORD")
+	pass := envOrDefault([]string{"MESH_ADMIN_PASSWORD", "GATEWAY_ADMIN_PASSWORD"}, "")
 	if pass != "" {
 		return pass
 	}
@@ -323,11 +362,12 @@ func ensureAdminPassword(dataDir string, log *slog.Logger) string {
 	pass = hex.EncodeToString(b)
 	if err := os.WriteFile(passPath, []byte(pass+"\n"), 0600); err != nil {
 		log.Warn("failed to save admin password file", "error", err)
+		return ""
 	}
 	log.Warn("==================================================================")
 	log.Warn("🔒 [SECURITY] 已为您自动生成初始管理员安全密码，请妥善保存:")
 	log.Warn("👉 用户名: admin")
-	log.Warn("👉 密  码: " + pass)
+	// Password stays in the private file, never in stdout/stderr.
 	log.Warn("👉 密码文件: " + passPath)
 	log.Warn("提示: 可通过环境变量 GATEWAY_ADMIN_PASSWORD 自定义管理员密码")
 	log.Warn("==================================================================")
@@ -393,10 +433,10 @@ func reachableAddr(addr string, hosts []string) string {
 func runServer(ctx context.Context, args []string) error {
 	cmd := newCommand("server", "Run the gateway: pairing endpoint and mTLS task API.")
 	addr := cmd.flags.String("addr", envOrDefault([]string{"MESH_SERVER_ADDR", "MESH_ADDR"}, defaultServerAddr), "listen address (HTTPS/mTLS)")
-	httpAddr := cmd.flags.String("http-addr", envString("MESH_HTTP_ADDR", ""), "optional cleartext HTTP listen address for WebUI and MCP without TLS (e.g. 0.0.0.0:8080)")
+	httpAddr := cmd.flags.String("http-addr", envString("MESH_HTTP_ADDR", ""), "optional HTTP rejection listener; management requires HTTPS")
 	dataDir := cmd.flags.String("data-dir", envString("MESH_DATA_DIR", "./gateway-data"), "directory for the CA, database and node records")
 	hosts := cmd.flags.String("hosts", envString("MESH_HOSTS", ""), "extra comma-separated host or IP names for the server certificate")
-	invitations := cmd.flags.Int("invitations", envInt("MESH_INVITATIONS", 1), "how many pairing invitations to print at startup")
+	invitations := cmd.flags.Int("invitations", envInt("MESH_INVITATIONS", 0), "how many invitations to save in startup-invitations.json (normally use mesh invite)")
 	inviteTTL := cmd.flags.Duration("invite-ttl", envDuration("MESH_INVITE_TTL", defaultInviteTTL), "how long each invitation stays valid")
 	expireEvery := cmd.flags.Duration("expire-sweep", envDuration("MESH_EXPIRE_SWEEP", defaultExpireSweep), "how often lapsed leases move to unknown")
 	if err := cmd.flags.Parse(args); err != nil {
@@ -431,23 +471,18 @@ func runServer(ctx context.Context, args []string) error {
 		fmt.Printf("data dir:        %s\n", *dataDir)
 		fmt.Printf("CA cert:         %s\n", info.CACertPath)
 		fmt.Printf("CA SHA-256:      %s\n", info.Fingerprint)
-		for _, invitation := range info.Invitations {
-			fmt.Printf("invitation:      %s (expires %s)\n", invitation.Token, invitation.ExpiresAt.UTC().Format(time.RFC3339))
+		if len(info.Invitations) > 0 {
+			fmt.Printf("invitations file: %s\n", filepath.Join(*dataDir, "startup-invitations.json"))
 		}
 		if pending, err := identity.PendingInvitations(*dataDir); err == nil && pending > 0 {
 			fmt.Printf("pending:         %d invitation(s) from earlier runs are still usable\n", pending)
 		}
 		if info.OperatorToken != "" {
-			fmt.Printf("operator token:  %s\n", info.OperatorToken)
+			fmt.Printf("operator token file: %s\n", filepath.Join(*dataDir, "admin.token"))
 		}
 		fmt.Printf("web dashboard:   %s/ui/\n", reachableAddr(info.Addr, hostList))
-		fmt.Printf("web login:       username: %s | password: %s\n", info.AdminUsername, info.AdminPassword)
-		if info.OperatorToken != "" {
-			if info.HTTPAddr != "" {
-				fmt.Printf("mcp (HTTP 推荐):  %s/mcp?token=%s\n", reachableAddr(info.HTTPAddr, hostList), info.OperatorToken)
-			}
-			fmt.Printf("mcp (HTTPS):     %s/mcp?token=%s\n", reachableAddr(info.Addr, hostList), info.OperatorToken)
-		}
+		fmt.Printf("web login:       username: %s | password file: %s\n", info.AdminUsername, filepath.Join(*dataDir, "admin.password"))
+		fmt.Printf("mcp (HTTPS):     %s/mcp (Authorization: Bearer required)\n", reachableAddr(info.Addr, hostList))
 		if warning := certHostWarning(address, hostList); warning != "" {
 			fmt.Printf("\nwarning:         %s\n", warning)
 		}

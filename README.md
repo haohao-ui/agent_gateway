@@ -22,17 +22,11 @@ go build -o bin/mesh ./cmd/mesh
 ./bin/mesh server
 ```
 
-终端会打印 Web 控制台地址与登录账号、配对邀请令牌、CA 证书指纹。首次启动自动生成 CA、证书与数据库。
+终端会打印控制台 HTTPS 地址、凭据文件路径与 CA 指纹，不打印管理员密码或操作员令牌。首次启动自动生成 CA、证书与数据库；登录密码保存在私有的 `admin.password` 文件中。
 
 **3. 接入一台工作节点**
 
-在目标机器上执行网关给出的安装命令即可，无需安装 Go：
-
-```sh
-curl -fsSL https://<网关地址>:8443/download/install.sh | bash -s -- <邀请令牌>
-```
-
-脚本会自动下载二进制、校验 SHA-256、完成证书配对并后台启动节点。
+先通过独立可信渠道准备 mesh 验证器、发行公钥与网关 CA，按[验证安装流程](docs/INSTALL.md)下载并验签，再用邀请码配对。未配置公钥、签名缺失或摘要不符时停止，不执行下载内容。源码构建也可直接用于配对。
 
 ## 核心能力
 
@@ -65,6 +59,7 @@ curl -fsSL https://<网关地址>:8443/download/install.sh | bash -s -- <邀请�
   server                          运行网关：配对、mTLS 任务接口、WebUI 与 /mcp
   invite                          为运行中的网关签发新的配对邀请
   credential issue|revoke         本地管理操作员凭证
+  release keygen|sign|verify|fetch 离线签名与可信下载
   device   list|revoke            查询或撤销已注册设备
 
 [Worker Node]
@@ -83,7 +78,7 @@ curl -fsSL https://<网关地址>:8443/download/install.sh | bash -s -- <邀请�
 ## 系统要求
 
 - 服务端与节点支持 macOS、Linux、Windows
-- 源码构建需要 Go 1.27.1（`go.mod` 声明）；终端用户使用一键安装脚本时无需安装 Go
+- 源码构建需要 Go 1.27.1（`go.mod` 声明）；终端用户使用已可信验证器安装时无需安装 Go
 - 运行时不依赖外部语言运行时、Redis 或独立数据库
 
 已实测通过 `darwin/arm64`、`linux/amd64`、`linux/arm64`、`windows/amd64` 四个目标的交叉编译；原生运行仅在 macOS 上验证过。

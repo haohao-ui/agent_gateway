@@ -1,15 +1,11 @@
 package httpapi
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"fmt"
-	"net"
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"agent-gateway/internal/policy"
@@ -178,108 +174,6 @@ func (s *Server) handleWaitTask(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
-type mcpSessionEntry struct {
-	mu          sync.RWMutex
-	token       string
-	principal   policy.Principal
-	lastChecked time.Time
-	expiresAt   time.Time
-}
-
-func (e *mcpSessionEntry) isLive() bool {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-	return time.Now().Before(e.expiresAt)
-}
-
-func (e *mcpSessionEntry) getToken() string {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-	return e.token
-}
-
-func (e *mcpSessionEntry) getPrincipal() policy.Principal {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-	return e.principal
-}
-
-func (e *mcpSessionEntry) update(token string, p policy.Principal) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if token != "" {
-		e.token = token
-	}
-	e.principal = p
-	e.lastChecked = time.Now()
-	e.expiresAt = time.Now().Add(30 * time.Minute)
-}
-
-type sseEndpointRewriter struct {
-	http.ResponseWriter
-	token     string
-	principal policy.Principal
-	server    *Server
-	rewrote   bool
-}
-
-func (rw *sseEndpointRewriter) Flush() {
-	if f, ok := rw.ResponseWriter.(http.Flusher); ok {
-		f.Flush()
-	}
-}
-
-func (rw *sseEndpointRewriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	if h, ok := rw.ResponseWriter.(http.Hijacker); ok {
-		return h.Hijack()
-	}
-	return nil, nil, http.ErrNotSupported
-}
-
-func (rw *sseEndpointRewriter) Write(b []byte) (int, error) {
-	if !rw.rewrote && bytes.Contains(b, []byte("event: endpoint")) {
-		rw.rewrote = true
-		lines := strings.Split(string(b), "\n")
-		var modifiedLines []string
-		for _, line := range lines {
-			if strings.HasPrefix(line, "data:") {
-				ep := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-				// Extract sessionid if present and record it in mcpSessions with token & principal
-				if idx := strings.Index(ep, "sessionid="); idx != -1 {
-					sid := ep[idx+len("sessionid="):]
-					if ampIdx := strings.Index(sid, "&"); ampIdx != -1 {
-						sid = sid[:ampIdx]
-					}
-					if sid != "" && rw.server != nil {
-						entry := &mcpSessionEntry{
-							token:       rw.token,
-							principal:   rw.principal,
-							lastChecked: time.Now(),
-							expiresAt:   time.Now().Add(30 * time.Minute),
-						}
-						rw.server.mcpSessions.Store(sid, entry)
-					}
-				}
-				// Append token to endpoint so standard MCP clients automatically send token in subsequent POSTs
-				if rw.token != "" && !strings.Contains(ep, "token=") {
-					sep := "&"
-					if !strings.Contains(ep, "?") {
-						sep = "?"
-					}
-					ep = ep + sep + "token=" + rw.token
-				}
-				modifiedLines = append(modifiedLines, "data: "+ep)
-			} else {
-				modifiedLines = append(modifiedLines, line)
-			}
-		}
-		newBytes := []byte(strings.Join(modifiedLines, "\n"))
-		_, err := rw.ResponseWriter.Write(newBytes)
-		return len(b), err
-	}
-	return rw.ResponseWriter.Write(b)
-}
-
 // SetMCPHandler attaches an HTTP handler to serve MCP protocol requests on /mcp.
 func (s *Server) SetMCPHandler(h http.Handler) {
 	s.mcpHandler = h
@@ -287,93 +181,24 @@ func (s *Server) SetMCPHandler(h http.Handler) {
 
 func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 	if s.mcpHandler == nil {
-		writeError(w, http.StatusNotFound, "not_found", "MCP service is not mounted on this gateway")
+		writeError(w, 404, "not_found", "MCP service unavailable")
 		return
 	}
-
-	sessionID := r.URL.Query().Get("sessionid")
-	token := extractOperatorToken(r)
-
-	var principal policy.Principal
-	var authenticated bool
-
-	if token != "" && s.policies != nil {
-		p, err := s.policies.Authenticate(r.Context(), token)
-		if err != nil {
-			writeError(w, http.StatusUnauthorized, "unauthorized", "invalid operator credential for MCP")
-			return
-		}
-		principal = p
-		authenticated = true
-		if sessionID != "" {
-			if val, ok := s.mcpSessions.Load(sessionID); ok {
-				if entry, ok := val.(*mcpSessionEntry); ok {
-					entry.update(token, p)
-				} else {
-					s.mcpSessions.Store(sessionID, &mcpSessionEntry{
-						token:       token,
-						principal:   p,
-						lastChecked: time.Now(),
-						expiresAt:   time.Now().Add(30 * time.Minute),
-					})
-				}
-			} else {
-				s.mcpSessions.Store(sessionID, &mcpSessionEntry{
-					token:       token,
-					principal:   p,
-					lastChecked: time.Now(),
-					expiresAt:   time.Now().Add(30 * time.Minute),
-				})
+	s.requireOperator(func(w http.ResponseWriter, r *http.Request) {
+		p := operatorPrincipal(r)
+		ctx := policy.WithPrincipal(r.Context(), p)
+		if r.Method == http.MethodGet {
+			lease, err := s.openStream(ctx, p.ID, extractOperatorToken(r))
+			if err != nil {
+				writeError(w, 429, "stream_limit", "too many streams")
+				return
 			}
+			defer lease.close()
+			ctx = lease.ctx
+			w = &authenticatedStreamWriter{ResponseWriter: w, server: s, token: extractOperatorToken(r), ctx: ctx}
 		}
-	} else if sessionID != "" {
-		// Session request without explicit token: re-validate bound token dynamically
-		if val, ok := s.mcpSessions.Load(sessionID); ok {
-			if entry, ok := val.(*mcpSessionEntry); ok && entry.isLive() {
-				if s.policies != nil {
-					p, err := s.policies.Authenticate(r.Context(), entry.getToken())
-					if err != nil {
-						s.mcpSessions.Delete(sessionID)
-						writeError(w, http.StatusUnauthorized, "unauthorized", "session credential has been revoked or expired")
-						return
-					}
-					principal = p
-					entry.update("", p)
-				} else {
-					principal = entry.getPrincipal()
-				}
-				authenticated = true
-			} else {
-				s.mcpSessions.Delete(sessionID)
-			}
-		}
-	}
-
-	if s.policies != nil && !authenticated {
-		writeError(w, http.StatusUnauthorized, "unauthorized", "operator credential required for MCP (Bearer header, ?token= or active session)")
-		return
-	}
-
-	// Inject authenticated principal into request context for MCP tool authorization
-	ctx := r.Context()
-	if authenticated {
-		ctx = policy.WithPrincipal(ctx, principal)
-	}
-	r = r.WithContext(ctx)
-
-	// For SSE stream initialization (GET), wrap ResponseWriter to record sessionid and forward token
-	if r.Method == http.MethodGet {
-		rw := &sseEndpointRewriter{
-			ResponseWriter: w,
-			token:          token,
-			principal:      principal,
-			server:         s,
-		}
-		s.mcpHandler.ServeHTTP(rw, r)
-		return
-	}
-
-	s.mcpHandler.ServeHTTP(w, r)
+		s.mcpHandler.ServeHTTP(w, r.WithContext(ctx))
+	})(w, r)
 }
 
 func (s *Server) handleDownloadCA(w http.ResponseWriter, r *http.Request) {

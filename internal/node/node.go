@@ -8,7 +8,6 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
@@ -16,12 +15,14 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
 
 	"agent-gateway/internal/protocol"
+	"agent-gateway/internal/release"
 	"agent-gateway/internal/runner"
 )
 
@@ -782,101 +783,82 @@ func isExecutableBinary(header []byte) bool {
 }
 
 func (n *Node) performSelfUpgrade(ctx context.Context, downloadURL string) (string, error) {
-	if downloadURL == "" {
-		downloadURL = n.cfg.ServerURL + "/download/mesh"
-	} else if u, err := url.Parse(downloadURL); err == nil {
-		if (u.Hostname() == "127.0.0.1" || u.Hostname() == "localhost") && n.cfg.ServerURL != "" {
-			if serverU, sErr := url.Parse(n.cfg.ServerURL); sErr == nil && serverU.Hostname() != "127.0.0.1" && serverU.Hostname() != "localhost" {
-				u.Scheme = serverU.Scheme
-				u.Host = serverU.Host
-				downloadURL = u.String()
-			}
-		}
-	}
-
-	execPath, err := os.Executable()
-	if err != nil {
-		return "", fmt.Errorf("locate executable: %w", err)
-	}
-
-	var logs []string
-	logs = append(logs, fmt.Sprintf("[1/3] 正在从网关下载最新节点程序...\n     下载地址: %s", downloadURL))
-
-	// Configure TLS: strictly verify against configured gateway CA certificate; NEVER use InsecureSkipVerify!
-	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
-	if n.cfg.CAFile != "" {
-		caPath := n.cfg.CAFile
-		if !filepath.IsAbs(caPath) && n.dir != "" {
-			caPath = filepath.Join(n.dir, caPath)
-		}
-		if caPEM, err := os.ReadFile(caPath); err == nil {
-			pool := x509.NewCertPool()
-			if pool.AppendCertsFromPEM(caPEM) {
-				tlsConfig.RootCAs = pool
-			}
-		}
-	}
-
-	client := &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig: tlsConfig,
-		},
-		Timeout: 90 * time.Second,
-	}
-	req, err := http.NewRequestWithContext(ctx, "GET", downloadURL, nil)
+	base, err := release.BaseURL(n.cfg.ServerURL)
 	if err != nil {
 		return "", err
 	}
-	resp, err := client.Do(req)
+	if downloadURL != "" {
+		u, err := url.Parse(downloadURL)
+		if err != nil || u.Scheme != base.Scheme || u.Host != base.Host || u.User != nil || (u.Path != "/download/mesh" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+			return "", errors.New("upgrade URL must use the configured HTTPS gateway origin")
+		}
+	}
+	pub, err := release.ReadPublicKey(filepath.Join(n.dir, "release.pub"))
 	if err != nil {
-		return "", fmt.Errorf("download mesh failed: %w", err)
+		return "", errors.New("independently trusted release.pub is required for upgrades")
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("download mesh returned HTTP %d", resp.StatusCode)
+	caPath := n.cfg.CAFile
+	if !filepath.IsAbs(caPath) {
+		caPath = filepath.Join(n.dir, caPath)
 	}
-
-	tmpFile := execPath + ".upgrade.tmp"
-	f, err := os.OpenFile(tmpFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
+	caPEM, err := os.ReadFile(caPath)
 	if err != nil {
-		return "", fmt.Errorf("create upgrade tmp file: %w", err)
+		return "", err
 	}
-	defer func() {
-		_ = f.Close()
-		_ = os.Remove(tmpFile)
-	}()
-
-	// Read initial header buffer for binary executable format inspection
-	headerBuf := make([]byte, 512)
-	nRead, err := io.ReadFull(resp.Body, headerBuf)
-	if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
-		return "", fmt.Errorf("read upgrade header: %w", err)
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(caPEM) {
+		return "", errors.New("invalid gateway CA")
 	}
-	if !isExecutableBinary(headerBuf[:nRead]) {
-		return "", fmt.Errorf("rejected upgrade: downloaded content is not a valid executable binary")
-	}
-
-	if _, err := f.Write(headerBuf[:nRead]); err != nil {
-		return "", fmt.Errorf("write upgrade header: %w", err)
-	}
-
-	written, err := io.Copy(f, resp.Body)
+	transport := &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots}}
+	defer transport.CloseIdleConnections()
+	executable, err := os.Executable()
 	if err != nil {
-		return "", fmt.Errorf("write upgrade file: %w", err)
+		return "", err
 	}
-	totalBytes := written + int64(nRead)
-	_ = f.Close()
-
-	if totalBytes < 1024 {
-		return "", fmt.Errorf("rejected upgrade: binary file too small (%d bytes)", totalBytes)
+	sequencePath := filepath.Join(n.dir, "release.sequence")
+	var minimum uint64
+	if raw, err := os.ReadFile(sequencePath); err == nil {
+		minimum, err = strconv.ParseUint(strings.TrimSpace(string(raw)), 10, 64)
+		if err != nil {
+			return "", errors.New("invalid release sequence state")
+		}
+	} else if !os.IsNotExist(err) {
+		return "", err
 	}
-
-	logs = append(logs, fmt.Sprintf("[2/3] 二进制下载成功，大小: %d 字节，正在执行安全文件替换...", totalBytes))
-
-	if err := os.Rename(tmpFile, execPath); err != nil {
+	staged, m, err := release.Fetch(ctx, &http.Client{Transport: transport}, base.String(), pub, runtime.GOOS+"-"+runtime.GOARCH, minimum, executable)
+	if err != nil {
+		return "", err
+	}
+	defer os.Remove(staged)
+	// Persist the high-water mark before replacement. Equal sequence permits retry;
+	// publishers must never reuse a sequence for different release contents.
+	state, err := os.CreateTemp(n.dir, ".release-sequence-*")
+	if err != nil {
+		return "", err
+	}
+	defer os.Remove(state.Name())
+	if _, err = fmt.Fprintf(state, "%d\n", m.Sequence); err == nil {
+		err = state.Sync()
+	}
+	closeErr := state.Close()
+	if err != nil {
+		return "", err
+	}
+	if closeErr != nil {
+		return "", closeErr
+	}
+	if err = os.Rename(state.Name(), sequencePath); err != nil {
+		return "", err
+	}
+	backup := executable + ".previous"
+	if err = os.Rename(executable, backup); err != nil {
+		return "", fmt.Errorf("backup executable: %w", err)
+	}
+	if err = os.Rename(staged, executable); err != nil {
+		if restoreErr := os.Rename(backup, executable); restoreErr != nil {
+			return "", fmt.Errorf("replace failed: %v; restore failed: %w", err, restoreErr)
+		}
 		return "", fmt.Errorf("replace executable: %w", err)
 	}
-
-	logs = append(logs, "[3/3] 二进制替换成功！节点将在 1 秒后自动平滑重启并重新连接网关...")
-	return strings.Join(logs, "\n\n"), nil
+	return fmt.Sprintf("Verified release %s (sequence %d) installed; previous executable retained for recovery.", m.Version, m.Sequence), nil
 }

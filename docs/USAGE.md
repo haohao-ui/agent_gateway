@@ -139,7 +139,7 @@ web login:       username: <用户名> | password: <密码>
 | `GET /onboarding.md` | 面向 AI 宿主的自助对接说明 |
 | `GET /ca.crt` | 下载网关 CA 证书（用于带外核对指纹） |
 | `GET /download/mesh`、`/download/mesh.sha256` | 下载节点二进制及其校验值 |
-| `GET /download/install.sh`、`/download/install.ps1` | 一键安装脚本 |
+| `GET /download/install.sh`、`/download/install.ps1` | 需要可信验证器和独立公钥的验证安装脚本 |
 | `GET /download/SKILL.md` | 下载内置技能说明 |
 
 ## 7. MCP 接入
@@ -172,13 +172,20 @@ MCP 服务提供两类入口，供 Claude Desktop、Cursor、Cline 等支持 MCP
 
 ### HTTP
 
-网关直接挂载 `/mcp`，启动时会打印带令牌的完整地址：
+网关挂载 HTTPS `/mcp`，所有请求使用独立操作员凭据：
 
-```text
-mcp (HTTPS):     https://127.0.0.1:8443/mcp?token=<操作员令牌>
+```json
+{
+  "mcpServers": {
+    "agent-gateway": {
+      "url": "https://gateway.example:8443/mcp",
+      "headers": {"Authorization": "Bearer <独立操作员令牌>"}
+    }
+  }
+}
 ```
 
-该端点受操作员令牌鉴权保护。若同时开启了明文 HTTP（`-http-addr`），会额外提供一个 `http://` 地址，仅建议绑定本机使用。
+`?token=` 已禁用，session ID 不能替代认证。启动日志只打印无凭据 URL 与令牌文件路径。默认凭据24小时过期，按需重新签发；控制台“证书与设置”可列出并撤销凭据。SSE/MCP GET流每主体4条、全局64条，超过返回429。
 
 ### 工具清单
 
@@ -216,7 +223,7 @@ mcp (HTTPS):     https://127.0.0.1:8443/mcp?token=<操作员令牌>
 | `mesh pair` 报邀请无效 | 邀请令牌一次性且默认 15 分钟过期，用 `mesh invite` 重新签发 |
 | 其他机器访问不到网关 | 网关默认只监听 `127.0.0.1:8443`，需显式设置 `-addr 0.0.0.0:8443` |
 | 任务长期停在 `unknown` | 节点失联或崩溃。用 `task list --state unknown` 查看后用 `requeue` 或 `resolve` 处理 |
-| 需要免证书访问控制台 | 仅在可信网络下用 `-http-addr 127.0.0.1:<port>`，不要绑到 `0.0.0.0` |
+| 浏览器不信任控制台证书 | 安装带外核对的 CA 或配置可信证书；明文管理已禁用 |
 | Windows 上 `service install` 失败 | Windows 未支持用户级后台服务，请用任务计划程序 |
 
 排障时优先使用 `mesh doctor`，它会把上述多数问题直接定位到具体配置项。

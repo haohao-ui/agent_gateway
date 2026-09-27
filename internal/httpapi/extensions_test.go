@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-	"time"
 
 	"agent-gateway/internal/policy"
 	"agent-gateway/internal/protocol"
@@ -136,47 +135,24 @@ func TestMCPMountAndAuth(t *testing.T) {
 
 func TestMCPSession_DynamicRevalidation(t *testing.T) {
 	s, ts, _ := secureFixture(t)
-	client := ts.Client()
 	token := issueRole(t, s, policy.Admin)
-
-	s.SetMCPHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("mcp session ok"))
-	}))
-
-	sessionID := "test-session-dynamic-1"
-
-	// 1. Initial request with token and sessionid -> registers session
-	code, _ := operatorCall(t, client, "POST", ts.URL+"/mcp?sessionid="+sessionID, token, nil)
-	if code != http.StatusOK {
-		t.Fatalf("expected 200 on initial session registration, got %d", code)
+	s.SetMCPHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) }))
+	endpoint := ts.URL + "/mcp?sessionid=test-session"
+	if code, _ := operatorCall(t, ts.Client(), "POST", endpoint, token, nil); code != 200 {
+		t.Fatal(code)
 	}
-
-	// 2. Subsequent request without token, using sessionid -> passes dynamic check
-	resp, err := client.Post(ts.URL+"/mcp?sessionid="+sessionID, "application/json", nil)
+	if code, _ := operatorCall(t, ts.Client(), "POST", endpoint, "", nil); code != 401 {
+		t.Fatalf("session ID bypassed credentials: %d", code)
+	}
+	p, err := s.policies.Authenticate(t.Context(), token)
 	if err != nil {
-		t.Fatalf("post with sessionid: %v", err)
+		t.Fatal(err)
 	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("expected 200 for active session request, got %d", resp.StatusCode)
+	if err := s.policies.Revoke(t.Context(), p.ID); err != nil {
+		t.Fatal(err)
 	}
-
-	// 3. Invalidate or corrupt the underlying session token in session store
-	s.mcpSessions.Store(sessionID, &mcpSessionEntry{
-		token:       "invalidated-or-revoked-token",
-		expiresAt:   time.Now().Add(10 * time.Minute),
-		lastChecked: time.Now(),
-	})
-
-	// 4. Request with sessionid should now fail dynamic re-validation -> 401
-	respRevoked, err := client.Post(ts.URL+"/mcp?sessionid="+sessionID, "application/json", nil)
-	if err != nil {
-		t.Fatalf("post with revoked session: %v", err)
-	}
-	respRevoked.Body.Close()
-	if respRevoked.StatusCode != http.StatusUnauthorized {
-		t.Errorf("expected 401 when underlying session token is invalid, got %d", respRevoked.StatusCode)
+	if code, _ := operatorCall(t, ts.Client(), "POST", endpoint, token, nil); code != 401 {
+		t.Fatalf("revoked credential accepted: %d", code)
 	}
 }
 
@@ -204,5 +180,3 @@ func TestDownloadMeshSHA256(t *testing.T) {
 		t.Errorf("expected 64-char sha256 hex string, got: %s", string(body))
 	}
 }
-
-
