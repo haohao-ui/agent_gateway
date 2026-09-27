@@ -11,3 +11,11 @@ coverage.out
 .env
 gateway-data*/
 test-local-node/
+
+# 内部文档：仅保留在本机，不进入公开仓库。
+# docs/ 下默认全部忽略，只放行面向使用者的产品文档。
+/AGENTS.md
+/CLAUDE.md
+/docs/*
+!/docs/INSTALL.md
+!/docs/USAGE.md
