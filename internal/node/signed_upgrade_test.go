@@ -26,11 +26,15 @@ func TestSignedUpgradeUsesPinnedKeyAndKeepsBackup(t *testing.T) {
 	if os.Getenv("SIGNED_UPGRADE_CHILD") == "1" {
 		dir := os.Getenv("SIGNED_UPGRADE_DIR")
 		n := &Node{dir: dir, cfg: Config{ServerURL: os.Getenv("SIGNED_UPGRADE_SERVER"), CAFile: filepath.Join(dir, "ca.crt")}}
-		if _, err := n.performSelfUpgrade(t.Context(), ""); err != nil {
-			t.Fatal(err)
-		}
+		// Resolve the running executable before the upgrade. On Linux
+		// /proc/self/exe follows the inode, so once the upgrade has renamed the
+		// old binary aside os.Executable() reports the ".previous" name and the
+		// backup would be looked up at "....previous.previous".
 		exe, err := os.Executable()
 		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := n.performSelfUpgrade(t.Context(), ""); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := os.Stat(exe + ".previous"); err != nil {

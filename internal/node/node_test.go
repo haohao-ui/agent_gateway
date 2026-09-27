@@ -1,16 +1,19 @@
 package node
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -19,6 +22,25 @@ import (
 	"agent-gateway/internal/protocol"
 	"agent-gateway/internal/runner"
 )
+
+// syncBuffer collects log output written by the node goroutine so a test can
+// wait for a lifecycle message without racing the writer.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
 
 func TestNodeExecutesTaskAndReportsResult(t *testing.T) {
 	gw := startTestGateway(t)
@@ -290,23 +312,20 @@ func TestNodeRefusesToRunTwiceInOneDirectory(t *testing.T) {
 	pairTestNode(t, gw, nodeDir)
 
 	cfg := testNodeConfig(t, gw.ts.URL, nodeDir, helperCapability(t, "echo-argv"))
-	first, err := New(cfg, nodeDir, testLogger())
+	// The readiness signal must not contend for the instance lock: probing the
+	// lock steals it from the node's own first acquisition, the first loop then
+	// exits with a conflict and nobody holds it. Run logs "node started" only
+	// after it took the lock and reconciled, which is safe on a loaded machine.
+	logs := &syncBuffer{}
+	first, err := New(cfg, nodeDir, slog.New(slog.NewTextHandler(logs, nil)))
 	if err != nil {
 		t.Fatalf("new node: %v", err)
 	}
 	t.Cleanup(func() { _ = first.Close() })
 	runNode(t, first)
 
-	// Wait until the first loop actually holds the lock, so the second attempt
-	// is a real contention rather than a race with startup.
-	lockPath := filepath.Join(nodeDir, lockFilename)
-	waitFor(t, "the first node to take the instance lock", 10*time.Second, func() bool {
-		release, err := acquireInstanceLock(lockPath)
-		if err != nil {
-			return true
-		}
-		_ = release()
-		return false
+	waitFor(t, "the first node to start and take the instance lock", 10*time.Second, func() bool {
+		return strings.Contains(logs.String(), "node started")
 	})
 
 	second, err := New(cfg, nodeDir, testLogger())
