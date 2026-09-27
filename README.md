@@ -12,16 +12,37 @@
 
 **1. 安装网关**
 
-源码构建，或按[签名安装流程](docs/INSTALL.md)使用独立可信的验证器和发行公钥安装 GitHub Release：
+一键安装（macOS / Linux，脚本内嵌该版本二进制的 SHA-256，本机有验签后端时自动加做签名验证）：
+
+```sh
+curl -fsSL https://github.com/haohao-ui/agent_gateway/releases/latest/download/install.sh | sh
+```
+
+Windows：
+
+```powershell
+irm https://github.com/haohao-ui/agent_gateway/releases/latest/download/install.ps1 | iex
+```
+
+需要不依赖下载服务器的保证时，用带外公钥或独立验证器：
+
+```sh
+sh install.sh --public-key /trusted/release.pub
+sh install.sh --verifier /trusted/mesh --public-key /trusted/release.pub
+```
+
+也可从源码构建：
 
 ```sh
 go build -o bin/mesh ./cmd/mesh
 ```
 
+信任模型与各条路径的差别见 [安装与部署](docs/INSTALL.md)。
+
 **2. 启动网关**
 
 ```sh
-./bin/mesh server
+mesh server
 ```
 
 终端会打印控制台 HTTPS 地址、凭据文件路径与 CA 指纹，不打印管理员密码或操作员令牌。首次启动自动生成 CA、证书与数据库；登录密码保存在私有的 `admin.password` 文件中。

@@ -24,19 +24,67 @@
 
 ## 2. 获取程序
 
-### 从 GitHub Release 安装网关
-
-先准备从已审核源码构建或独立交付的 mesh 验证器，以及带外核对的发行公钥；使用可信来源的仓库根目录安装脚本，不使用 `curl | sh` / `irm | iex`：
+### 一键安装网关（macOS / Linux，推荐）
 
 ```sh
-sh ./install.sh --verifier /trusted/mesh --public-key /trusted/release.pub --version v0.1.2 --dir "$HOME/.local/bin"
+curl -fsSL https://github.com/haohao-ui/agent_gateway/releases/latest/download/install.sh | sh
+```
+
+Windows：
+
+```powershell
+irm https://github.com/haohao-ui/agent_gateway/releases/latest/download/install.ps1 | iex
+```
+
+发布页附带的安装脚本由发版流水线生成，**内嵌该版本每个平台二进制的 SHA-256**（取自该版本的已签名清单）：
+
+- 只依赖 `curl` 与 `sha256sum`/`shasum`（Windows 用内置 `Get-FileHash`），无需额外依赖；
+- 校验不通过立即终止，**不落盘、不赋可执行权限**；
+- 本机若存在可用验签后端（支持 Ed25519 的 `openssl`，或带 `cryptography` 的 `python3`），会额外用内嵌公钥验证清单签名，并**要求签名清单里的目标条目与下载到的二进制一致**，把校验等级提升为完整验签；
+- 默认安装到 `~/.local/bin`，原程序备份为 `mesh.bak`，许可声明安装到 `agent-gateway-notices`；不修改 shell 配置、不注册后台服务；
+- 安装结束后会打印本次达到的**校验等级**，不掩饰降级。
+
+指定版本或目录：
+
+```sh
+curl -fsSL .../install.sh | sh -s -- --version v0.1.3
+curl -fsSL .../install.sh | sh -s -- --dir "$HOME/bin"
+```
+
+### 强校验安装（不依赖下载服务器）
+
+需要不依赖下载服务器的保证时，带外获取发行公钥（从已审核源码构建的 `mesh` 也可作为独立验证器）：
+
+```sh
+# 带外公钥 + 本机验签后端：验签后按签名清单安装
+sh install.sh --public-key /trusted/release.pub
+
+# 独立验证器：最强路径
+sh install.sh --verifier /trusted/mesh --public-key /trusted/release.pub
 ```
 
 ```powershell
-./install.ps1 -Verifier C:\trusted\mesh.exe -PublicKey C:\trusted\release.pub -Version v0.1.2
+./install.ps1 -PublicKey C:\trusted\release.pub
+./install.ps1 -Verifier C:\trusted\mesh.exe -PublicKey C:\trusted\release.pub
 ```
 
-脚本下载所选平台二进制、签名清单和三份许可证材料，通过可信验证器检查后才安装；缺少公钥、签名或任何材料立即停止，不能跳过验签。现有程序保留 `.bak`，许可声明安装到 `agent-gateway-notices`。归档包内含清单、签名、许可材料，可使用 `mesh release verify --dir <解压目录> --public-key <带外公钥> --target <平台>` 验证。根目录安装器使用系统信任的 HTTPS，并允许 GitHub 的 HTTPS CDN 重定向；节点自升级仍禁止重定向。
+带外固定公钥指纹可防止脚本内嵌公钥被替换：
+
+```sh
+sh install.sh --fingerprint 88bdfc0623fa313e29567c48b1c64fc0cba6f0cb9afe07c890c808c26b631216
+```
+
+### 信任模型
+
+| 路径 | 信任锚 | 是否做签名验证 |
+|---|---|---|
+| 一键安装（无参数） | HTTPS 传输 + 脚本内嵌 SHA-256（取自该版本的已签名清单） | 本机有可用后端时自动加上，并交叉核对签名清单 |
+| `--public-key` | 带外公钥 | 是（必须成功，否则终止） |
+| `--verifier` + `--public-key` | 带外验证器与公钥 | 是（最强，含平台条目校验） |
+
+一键路径的信任锚在这份脚本内容与 HTTPS 上：能改脚本的人同样能改证书，所以它**不声称**替代带外验签。要把保证提升到不依赖下载服务器，请用 `--public-key` 或 `--verifier`。任何路径都**不提供跳过校验的选项**。
+
+仓库根目录的 `install.sh` / `install.ps1` 未注入指纹（指纹只在发版时写入发布页附带的那份），直接运行仓库副本会明确报错并给出替代用法，不会静默降级。
 
 ### 方式一：验证发行包后安装节点
 

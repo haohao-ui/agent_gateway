@@ -109,6 +109,30 @@ jobs:
           sequence=$((RELEASE_RUN_NUMBER * 1000 + RELEASE_RUN_ATTEMPT))
           go run ./cmd/mesh release sign --dir assets --key "$signing_dir/release.key" --version "${RELEASE_TAG#v}" --sequence "$sequence"
           go run ./cmd/mesh release verify --dir assets --public-key "$signing_dir/release.pub"
+      - name: Pin one-click installers
+        env:
+          RELEASE_PUBLIC_KEY_PEM: ${{ vars.RELEASE_PUBLIC_KEY_PEM }}
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          test -n "$RELEASE_PUBLIC_KEY_PEM"
+          printf '%s\n' "$RELEASE_PUBLIC_KEY_PEM" > pinned.pub
+          python3 scripts/pin-installers.py assets/manifest.json "${RELEASE_TAG#v}" pinned.pub assets/install.sh assets/install.ps1
+          rm -f pinned.pub
+          # 断言：发布脚本必须带上本版本每个平台的指纹，否则一键安装会退化为拒绝服务。
+          python3 - <<'PY'
+          import json, pathlib, sys
+          manifest = json.loads(pathlib.Path('assets/manifest.json').read_text())
+          linux = manifest['files']['linux-amd64']['sha256']
+          windows = manifest['files']['windows-arm64']['sha256']
+          shell = pathlib.Path('assets/install.sh').read_text()
+          ps1 = pathlib.Path('assets/install.ps1').read_text()
+          for label, text, digest in (('install.sh', shell, linux), ('install.ps1', ps1, windows)):
+              if digest not in text:
+                  sys.exit(f'{label} is missing the pinned digest {digest}')
+              if 'PINNED' not in text:
+                  sys.exit(f'{label} has no pinned block')
+          print('pinned digests verified in both installers')
+          PY
       - name: Package signed bundles
         env:
           RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
