@@ -24,6 +24,20 @@
 
 ## 2. 获取程序
 
+### 从 GitHub Release 安装网关
+
+先准备从已审核源码构建或独立交付的 mesh 验证器，以及带外核对的发行公钥；使用可信来源的仓库根目录安装脚本，不使用 `curl | sh` / `irm | iex`：
+
+```sh
+sh ./install.sh --verifier /trusted/mesh --public-key /trusted/release.pub --version v0.1.2 --dir "$HOME/.local/bin"
+```
+
+```powershell
+./install.ps1 -Verifier C:\trusted\mesh.exe -PublicKey C:\trusted\release.pub -Version v0.1.2
+```
+
+脚本下载所选平台二进制、签名清单和三份许可证材料，通过可信验证器检查后才安装；缺少公钥、签名或任何材料立即停止，不能跳过验签。现有程序保留 `.bak`，许可声明安装到 `agent-gateway-notices`。归档包内含清单、签名、许可材料，可使用 `mesh release verify --dir <解压目录> --public-key <带外公钥> --target <平台>` 验证。根目录安装器使用系统信任的 HTTPS，并允许 GitHub 的 HTTPS CDN 重定向；节点自升级仍禁止重定向。
+
 ### 方式一：验证发行包后安装节点
 
 发行公钥与验证程序必须独立可信，不能从同一个待验证下载源取得后直接信任。可从已审核源码构建 mesh 验证器，或通过独立可信渠道交付。网关部署签名发行包到 `<data-dir>/dist/`。
@@ -237,3 +251,11 @@ mesh release verify --dir /new/release-dir --public-key /trusted/release.pub
 节点自升级仅从配置的 HTTPS 网关源取签名发行文件，禁止明文和重定向。须先在节点目录带外放置 `release.pub`；没有公钥即拒绝升级。校验成功后保留 `.previous` 备份再替换，并保存 `release.sequence` 防止较旧序号回退；同序号允许失败重试，发行方不得复用序号。替换失败尝试恢复备份。备份恢复仍需运维人员按数据库兼容情况决定；没有宣称自动健康检查或跨平台升级回滚验收完成。
 
 `/download/mesh.sha256` 仅用于非认证的完整性诊断，不是可信安装依据。下载证书、摘要或二进制的 HTTP 200 也不能证明其发行身份。
+
+### GitHub Actions 发布配置
+
+发布流水线先执行测试、race、vet、gofmt 和固定版本 govulncheck，再构建六个平台。`sign-and-publish` 使用受保护的 `release-signing` Environment；仓库维护者需自行配置审核人、环境 secret `RELEASE_SIGNING_KEY_PEM` 以及变量 `RELEASE_PUBLIC_KEY_PEM`。本次代码修改不创建或上传任何真实密钥。
+
+签名前验证私钥/独立公钥匹配；缺少密钥即失败，没有无签名回退。私钥只临时写入运行器私有目录，不上传为产物。发布包保留 LICENSE、NOTICE、THIRD_PARTY_NOTICES、manifest.json 和 manifest.sig。现有 Release 不覆盖，需新 tag；序号按 workflow run number / attempt 递增。若变更 workflow 导致运行编号重置，应重新规划发行序号，不能降低节点已记录的序号。私钥也可完全离线使用 build-release.sh；不要求交给 CI。
+
+首次发布的 verifier、公钥以及 installer 本身仍需独立可信交付。这是信任引导条件，不能由“同一下载服务器同时提供公钥和程序”代替。本机未执行 GitHub Actions，也未设置仓库或环境凭据。

@@ -43,7 +43,7 @@ func runRelease(ctx context.Context, args []string) error {
 	ttl := cmd.flags.Duration("ttl", 30*24*time.Hour, "manifest validity")
 	server := cmd.flags.String("server", "", "HTTPS download origin")
 	ca := cmd.flags.String("ca", "", "trusted TLS CA PEM (optional)")
-	target := cmd.flags.String("target", runtime.GOOS+"-"+runtime.GOARCH, "target platform")
+	target := cmd.flags.String("target", "", "target platform (fetch defaults to host; verify defaults to all files)")
 	out := cmd.flags.String("out", "", "new destination file; refuses overwrite")
 	if err := cmd.flags.Parse(args[1:]); err != nil {
 		return err
@@ -142,13 +142,24 @@ func runRelease(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
-		for target, f := range m.Files {
+		if *target != "" {
+			if _, ok := release.Targets[*target]; !ok {
+				return errors.New("invalid target")
+			}
+			if _, ok := m.Files[*target]; !ok {
+				return errors.New("target absent from manifest")
+			}
+		}
+		for entryTarget, f := range m.Files {
+			if _, binary := release.Targets[entryTarget]; binary && *target != "" && entryTarget != *target {
+				continue
+			}
 			path := filepath.Join(*dir, f.Name)
 			if err := release.VerifyFile(path, f); err != nil {
 				return err
 			}
-			if _, ok := release.Targets[target]; ok {
-				if err := release.CheckPlatform(path, target); err != nil {
+			if _, ok := release.Targets[entryTarget]; ok {
+				if err := release.CheckPlatform(path, entryTarget); err != nil {
 					return err
 				}
 			}
@@ -156,6 +167,9 @@ func runRelease(ctx context.Context, args []string) error {
 		fmt.Printf("verified release %s (sequence %d)\n", m.Version, m.Sequence)
 		return nil
 	case "fetch":
+		if *target == "" {
+			*target = runtime.GOOS + "-" + runtime.GOARCH
+		}
 		if *out == "" {
 			return errors.New("--out required")
 		}

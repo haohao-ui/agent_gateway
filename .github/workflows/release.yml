@@ -1,0 +1,132 @@
+# Signing is required. Configure the protected release-signing environment first.
+# No unsigned fallback, credential output, or replacement of an existing release.
+name: Release
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag (vX.Y.Z)"
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Validate release input
+        env:
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$ ]] || exit 1
+          test "$(git rev-parse HEAD)" = "$(git rev-list -n 1 "$RELEASE_TAG")"
+      - name: Quality gate
+        run: |
+          test -z "$(gofmt -l $(git ls-files '*.go'))"
+          go vet ./...
+          go test ./...
+          go test -race ./...
+          GOTOOLCHAIN=go1.27.1 go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
+          govulncheck -version
+          govulncheck ./...
+      - name: Build six platforms and retain notices
+        env:
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          mkdir assets
+          python3 scripts/collect-notices.py
+          cp LICENSE NOTICE THIRD_PARTY_NOTICES README.md install.sh install.ps1 assets/
+          for target in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64 windows/amd64 windows/arm64; do
+            goos=${target%/*}; goarch=${target#*/}; suffix=''
+            if [ "$goos" = windows ]; then suffix='.exe'; fi
+            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build -trimpath \
+              -ldflags "-X agent-gateway/internal/protocol.Version=${RELEASE_TAG#v} -X agent-gateway/internal/protocol.GitCommit=$(git rev-parse HEAD) -X agent-gateway/internal/protocol.BuildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+              -o "assets/mesh-$goos-$goarch$suffix" ./cmd/mesh
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-release
+          path: assets/
+          if-no-files-found: error
+  sign-and-publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: release-signing
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/download-artifact@v4
+        with:
+          name: unsigned-release
+          path: assets
+      - name: Refuse an existing release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo 'Release already exists; use a new tag and sequence.' >&2
+            exit 1
+          fi
+      - name: Sign and independently verify manifest
+        env:
+          RELEASE_SIGNING_KEY_PEM: ${{ secrets.RELEASE_SIGNING_KEY_PEM }}
+          RELEASE_PUBLIC_KEY_PEM: ${{ vars.RELEASE_PUBLIC_KEY_PEM }}
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          RELEASE_RUN_NUMBER: ${{ github.run_number }}
+          RELEASE_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          test -n "$RELEASE_SIGNING_KEY_PEM" && test -n "$RELEASE_PUBLIC_KEY_PEM"
+          test "$RELEASE_RUN_ATTEMPT" -lt 1000
+          signing_dir=$(mktemp -d)
+          trap 'rm -rf "$signing_dir"' EXIT
+          export RELEASE_KEY_DIR="$signing_dir"
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          root = Path(os.environ['RELEASE_KEY_DIR'])
+          for name, source in [('release.key','RELEASE_SIGNING_KEY_PEM'),('release.pub','RELEASE_PUBLIC_KEY_PEM')]:
+              with open(root/name, 'x', opener=lambda p,f: os.open(p,f,0o600)) as stream:
+                  stream.write(os.environ[source])
+          PY
+          sequence=$((RELEASE_RUN_NUMBER * 1000 + RELEASE_RUN_ATTEMPT))
+          go run ./cmd/mesh release sign --dir assets --key "$signing_dir/release.key" --version "${RELEASE_TAG#v}" --sequence "$sequence"
+          go run ./cmd/mesh release verify --dir assets --public-key "$signing_dir/release.pub"
+      - name: Package signed bundles
+        env:
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          python3 scripts/package-release.py assets "${RELEASE_TAG#v}"
+          cd assets
+          sha256sum mesh-* agent-gateway_* LICENSE NOTICE THIRD_PARTY_NOTICES manifest.json manifest.sig install.sh install.ps1 > SHA256SUMS
+      - name: Publish immutable assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          cat > notes.md <<'NOTES'
+          开发阶段版本，不声明 production ready。
+
+          下载包含 manifest.json、manifest.sig、LICENSE、NOTICE、THIRD_PARTY_NOTICES 的签名发行包。
+          公钥和 mesh 验证器必须通过独立可信渠道准备；使用 mesh release verify 验签后再安装。
+          不要执行未经验证的 curl | sh / irm | iex 引导脚本。安装说明见 docs/INSTALL.md。
+          SHA256SUMS 是诊断校验和，不替代发行签名。旧凭据寿命将收紧到签发后24小时。
+          NOTES
+          gh release create "$RELEASE_TAG" --verify-tag --title "Agent Gateway $RELEASE_TAG" --notes-file notes.md assets/*

@@ -19,7 +19,7 @@ mkdir "$OUTPUT"
  govulncheck ./...
 } > "$OUTPUT/release-checks.log" 2>&1
 python3 scripts/collect-notices.py
-cp LICENSE NOTICE THIRD_PARTY_NOTICES "$OUTPUT/"
+cp LICENSE NOTICE THIRD_PARTY_NOTICES README.md "$OUTPUT/"
 COMMIT=$(git rev-parse --short HEAD)
 BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 for TARGET in darwin/arm64 darwin/amd64 linux/amd64 linux/arm64 windows/amd64 windows/arm64; do

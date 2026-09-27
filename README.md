@@ -10,7 +10,9 @@
 
 ## 快速开始
 
-**1. 构建网关**
+**1. 安装网关**
+
+源码构建，或按[签名安装流程](docs/INSTALL.md)使用独立可信的验证器和发行公钥安装 GitHub Release：
 
 ```sh
 go build -o bin/mesh ./cmd/mesh
