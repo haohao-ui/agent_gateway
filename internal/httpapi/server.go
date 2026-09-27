@@ -220,6 +220,10 @@ func (s *Server) handleProbe(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	if r.TLS == nil && !s.allowPlainHTTP {
+		writeError(w, http.StatusForbidden, "forbidden", "login requires TLS")
+		return
+	}
 	var in struct {
 		Username string `json:"username"`
 		Password string `json:"password"`

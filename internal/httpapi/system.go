@@ -11,12 +11,15 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"syscall"
 	"time"
+
+	"agent-gateway/internal/policy"
 )
 
 type TLSStatus struct {
@@ -68,19 +71,43 @@ func (s *Server) handleGetTLSStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, status)
 }
 
+// requireAdminPrincipal authenticates the operator token, checks CSRF, and ensures the principal holds Admin role.
+func (s *Server) requireAdminPrincipal(w http.ResponseWriter, r *http.Request) bool {
+	if origin := r.Header.Get("Origin"); origin != "" {
+		if u, err := url.Parse(origin); err == nil {
+			if !strings.EqualFold(u.Host, r.Host) {
+				writeError(w, http.StatusForbidden, "forbidden", "cross-origin request disallowed")
+				return false
+			}
+		} else {
+			writeError(w, http.StatusForbidden, "forbidden", "invalid origin header")
+			return false
+		}
+	}
+	if s.policies == nil {
+		return true
+	}
+	token := extractOperatorToken(r)
+	if token == "" {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "operator token required")
+		return false
+	}
+	p, err := s.policies.Authenticate(r.Context(), token)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "invalid operator token")
+		return false
+	}
+	if p.Role != policy.Admin {
+		writeError(w, http.StatusForbidden, "forbidden", "admin role required for this operation")
+		return false
+	}
+	return true
+}
+
 // handleUploadTLS receives multipart/form-data or JSON with certificate and private key.
 func (s *Server) handleUploadTLS(w http.ResponseWriter, r *http.Request) {
-	// Require operator authorization
-	if s.policies != nil {
-		token := extractOperatorToken(r)
-		if token == "" {
-			writeError(w, http.StatusUnauthorized, "unauthorized", "operator token required")
-			return
-		}
-		if _, err := s.policies.Authenticate(r.Context(), token); err != nil {
-			writeError(w, http.StatusUnauthorized, "unauthorized", "invalid operator token")
-			return
-		}
+	if !s.requireAdminPrincipal(w, r) {
+		return
 	}
 
 	err := r.ParseMultipartForm(10 << 20) // 10 MB limit
@@ -145,16 +172,8 @@ func (s *Server) handleUploadTLS(w http.ResponseWriter, r *http.Request) {
 
 // handleResetTLS restores the built-in self-signed CA certificates.
 func (s *Server) handleResetTLS(w http.ResponseWriter, r *http.Request) {
-	if s.policies != nil {
-		token := extractOperatorToken(r)
-		if token == "" {
-			writeError(w, http.StatusUnauthorized, "unauthorized", "operator token required")
-			return
-		}
-		if _, err := s.policies.Authenticate(r.Context(), token); err != nil {
-			writeError(w, http.StatusUnauthorized, "unauthorized", "invalid operator token")
-			return
-		}
+	if !s.requireAdminPrincipal(w, r) {
+		return
 	}
 
 	_ = os.Remove(s.customCertPath())
@@ -168,16 +187,8 @@ func (s *Server) handleResetTLS(w http.ResponseWriter, r *http.Request) {
 
 // handleSystemRestart restarts the gateway process gracefully.
 func (s *Server) handleSystemRestart(w http.ResponseWriter, r *http.Request) {
-	if s.policies != nil {
-		token := extractOperatorToken(r)
-		if token == "" {
-			writeError(w, http.StatusUnauthorized, "unauthorized", "operator token required")
-			return
-		}
-		if _, err := s.policies.Authenticate(r.Context(), token); err != nil {
-			writeError(w, http.StatusUnauthorized, "unauthorized", "invalid operator token")
-			return
-		}
+	if !s.requireAdminPrincipal(w, r) {
+		return
 	}
 
 	execPath, err := os.Executable()
@@ -200,8 +211,39 @@ func (s *Server) handleSystemRestart(w http.ResponseWriter, r *http.Request) {
 	}()
 }
 
+var knownPlatformBinaries = map[string]string{
+	"darwin-amd64":  "mesh-darwin-amd64",
+	"darwin-arm64":  "mesh-darwin-arm64",
+	"linux-amd64":   "mesh-linux-amd64",
+	"linux-arm64":   "mesh-linux-arm64",
+	"windows-amd64": "mesh-windows-amd64.exe",
+	"windows-arm64": "mesh-windows-arm64.exe",
+}
+
 func (s *Server) resolveMeshBinaryPath(arch, ua string) (string, string, error) {
+	arch = strings.ToLower(strings.TrimSpace(arch))
+	ua = strings.ToLower(ua)
 	isWindows := strings.Contains(arch, "windows") || strings.Contains(ua, "windows")
+
+	var targetFileNames []string
+
+	if arch != "" {
+		// Strict validation: reject any directory traversal attempts or illegal characters
+		if strings.ContainsAny(arch, "/\\.%") || len(arch) > 32 {
+			return "", "", fmt.Errorf("invalid arch parameter: path traversal disallowed")
+		}
+		if exactName, ok := knownPlatformBinaries[arch]; ok {
+			targetFileNames = append(targetFileNames, exactName)
+		} else {
+			targetFileNames = append(targetFileNames, fmt.Sprintf("mesh-%s.exe", arch), fmt.Sprintf("mesh-%s", arch))
+		}
+	} else if isWindows {
+		targetFileNames = append(targetFileNames, "mesh-windows-amd64.exe", "mesh-windows-arm64.exe")
+	} else if strings.Contains(ua, "linux") {
+		targetFileNames = append(targetFileNames, "mesh-linux-amd64", "mesh-linux-arm64")
+	} else {
+		targetFileNames = append(targetFileNames, "mesh-darwin-arm64", "mesh-darwin-amd64", "mesh")
+	}
 
 	searchDirs := []string{}
 	if s.dataDir != "" {
@@ -212,35 +254,38 @@ func (s *Server) resolveMeshBinaryPath(arch, ua string) (string, string, error) 
 		searchDirs = append(searchDirs, filepath.Join(filepath.Dir(execPath), "dist"))
 	}
 
-	var baseNames []string
-	if arch != "" {
-		baseNames = append(baseNames, fmt.Sprintf("mesh-%s.exe", arch), fmt.Sprintf("mesh-%s", arch))
-	}
-	if isWindows {
-		baseNames = append(baseNames, "mesh-windows-amd64.exe", "mesh-windows-amd64")
-	} else if strings.Contains(ua, "linux") {
-		baseNames = append(baseNames, "mesh-linux-amd64", "mesh-linux-arm64")
-	}
-
 	for _, d := range searchDirs {
-		for _, name := range baseNames {
-			candidate := filepath.Join(d, name)
-			if fi, err := os.Stat(candidate); err == nil && !fi.IsDir() {
+		absDir, err := filepath.Abs(d)
+		if err != nil {
+			continue
+		}
+		for _, name := range targetFileNames {
+			candidate := filepath.Join(absDir, name)
+			cleanCandidate := filepath.Clean(candidate)
+			// Enforce strictly that candidate file resides inside the allowed distribution directory
+			if !strings.HasPrefix(cleanCandidate, absDir+string(filepath.Separator)) {
+				continue
+			}
+			if fi, err := os.Stat(cleanCandidate); err == nil && !fi.IsDir() {
 				outName := "mesh"
-				if isWindows || strings.HasSuffix(name, ".exe") {
+				if isWindows || strings.HasSuffix(cleanCandidate, ".exe") {
 					outName = "mesh.exe"
 				}
-				return candidate, outName, nil
+				return cleanCandidate, outName, nil
 			}
 		}
 	}
 
-	// Default: serve currently running executable
-	execPath, err := os.Executable()
-	if err != nil {
-		return "", "", fmt.Errorf("binary not available: %w", err)
+	// If a specific arch was requested, do NOT fall back to the host executable
+	if arch != "" {
+		return "", "", os.ErrNotExist
 	}
 
+	// For default download (no arch specified), fallback to current running executable
+	execPath, err := os.Executable()
+	if err != nil {
+		return "", "", os.ErrNotExist
+	}
 	outName := "mesh"
 	if isWindows {
 		outName = "mesh.exe"
@@ -268,7 +313,7 @@ func (s *Server) handleDownloadMesh(w http.ResponseWriter, r *http.Request) {
 	ua := strings.ToLower(r.UserAgent())
 	candidate, outName, err := s.resolveMeshBinaryPath(arch, ua)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		writeError(w, http.StatusNotFound, "not_found", "mesh binary not found for requested architecture")
 		return
 	}
 
@@ -416,9 +461,11 @@ func (s *Server) handleDownloadInstallPowerShell(w http.ResponseWriter, r *http.
 	tlsURL := fmt.Sprintf("https://%s:8443", host)
 	token := r.URL.Query().Get("token")
 
+	safeToken := strings.ReplaceAll(token, "'", "''")
+
 	script := fmt.Sprintf(`param(
     [Parameter(Position=0)]
-    [string]$Token = "%[3]s",
+    [string]$Token = '%[3]s',
 
     [Parameter(Position=1)]
     [string]$Dir = "$HOME\.agent-mesh-node"
@@ -533,7 +580,7 @@ Write-Host "运行日志文件: $logFile" -ForegroundColor Yellow
 Write-Host "查看实时日志命令 (PowerShell):" -ForegroundColor Gray
 Write-Host "  Get-Content -Path '$logFile' -Wait" -ForegroundColor White
 Write-Host "==========================================================" -ForegroundColor Green
-`, downloadURL, tlsURL, token)
+`, downloadURL, tlsURL, safeToken)
 
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
@@ -577,16 +624,8 @@ func (s *Server) handleDownloadSkill(w http.ResponseWriter, r *http.Request) {
 
 // handleCreateInvitation mints an invitation token (single-use or multi-use) for node enrollment.
 func (s *Server) handleCreateInvitation(w http.ResponseWriter, r *http.Request) {
-	if s.policies != nil {
-		token := extractOperatorToken(r)
-		if token == "" {
-			writeError(w, http.StatusUnauthorized, "unauthorized", "operator token required")
-			return
-		}
-		if _, err := s.policies.Authenticate(r.Context(), token); err != nil {
-			writeError(w, http.StatusUnauthorized, "unauthorized", "invalid operator token")
-			return
-		}
+	if !s.requireAdminPrincipal(w, r) {
+		return
 	}
 
 	var in struct {

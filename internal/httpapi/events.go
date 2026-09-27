@@ -5,10 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	"agent-gateway/internal/events"
+	"agent-gateway/internal/policy"
 )
 
 // DoctorFunc evaluates diagnostic health of the gateway environment.
@@ -16,32 +16,20 @@ type DoctorFunc func(ctx context.Context) any
 
 // handleSSEStreams handles browser and client real-time event subscriptions over Server-Sent Events.
 func (s *Server) handleSSEStreams(w http.ResponseWriter, r *http.Request) {
-	// 1. Authorize: Header Bearer or Query param token
-	if s.policies != nil && r.TLS != nil {
-		token := ""
-		if authHeader := r.Header.Get("Authorization"); authHeader != "" {
-			parts := strings.Fields(authHeader)
-			if len(parts) == 2 && strings.EqualFold(parts[0], "Bearer") {
-				token = parts[1]
-			}
-		}
-		if token == "" {
-			token = r.URL.Query().Get("token")
-		}
-		if token == "" {
-			if c, err := r.Cookie("gateway_token"); err == nil && c.Value != "" {
-				token = c.Value
-			}
-		}
-
+	// 1. Authorize: Header Bearer, Query param token, or secure Cookie
+	var currentPrincipal policy.Principal
+	if s.policies != nil {
+		token := extractOperatorToken(r)
 		if token == "" {
 			writeError(w, http.StatusUnauthorized, "unauthorized", "operator token required for event stream")
 			return
 		}
-		if _, err := s.policies.Authenticate(r.Context(), token); err != nil {
+		p, err := s.policies.Authenticate(r.Context(), token)
+		if err != nil {
 			writeError(w, http.StatusUnauthorized, "unauthorized", "invalid operator credential")
 			return
 		}
+		currentPrincipal = p
 	}
 
 	flusher, ok := w.(http.Flusher)
@@ -82,6 +70,14 @@ func (s *Server) handleSSEStreams(w http.ResponseWriter, r *http.Request) {
 		case evt, ok := <-ch:
 			if !ok {
 				return
+			}
+			// Scope-based isolation: non-admin operators/viewers only receive events within authorized nodes
+			if s.policies != nil && currentPrincipal.Role != policy.Admin {
+				if evt.NodeID != "" {
+					if err := policy.Authorize(currentPrincipal, policy.ActionTaskRead, evt.NodeID); err != nil {
+						continue // Do not leak events outside the principal's node scope
+					}
+				}
 			}
 			payload, err := json.Marshal(evt)
 			if err != nil {

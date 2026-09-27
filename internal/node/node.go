@@ -1,6 +1,7 @@
 package node
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -754,6 +755,32 @@ func checkCertificateValidity(certPEM []byte, now time.Time) error {
 	return nil
 }
 
+func isExecutableBinary(header []byte) bool {
+	if len(header) < 2 {
+		return false
+	}
+	// PE (Windows) MZ header
+	if header[0] == 'M' && header[1] == 'Z' {
+		return true
+	}
+	if len(header) < 4 {
+		return false
+	}
+	// ELF (Linux)
+	if bytes.Equal(header[:4], []byte{0x7f, 'E', 'L', 'F'}) {
+		return true
+	}
+	// Mach-O (macOS 32/64 & Universal fat binary)
+	if bytes.Equal(header[:4], []byte{0xfe, 0xed, 0xfa, 0xce}) ||
+		bytes.Equal(header[:4], []byte{0xfe, 0xed, 0xfa, 0xcf}) ||
+		bytes.Equal(header[:4], []byte{0xce, 0xfa, 0xed, 0xfe}) ||
+		bytes.Equal(header[:4], []byte{0xcf, 0xfa, 0xed, 0xfe}) ||
+		bytes.Equal(header[:4], []byte{0xca, 0xfe, 0xba, 0xbe}) {
+		return true
+	}
+	return false
+}
+
 func (n *Node) performSelfUpgrade(ctx context.Context, downloadURL string) (string, error) {
 	if downloadURL == "" {
 		downloadURL = n.cfg.ServerURL + "/download/mesh"
@@ -775,9 +802,24 @@ func (n *Node) performSelfUpgrade(ctx context.Context, downloadURL string) (stri
 	var logs []string
 	logs = append(logs, fmt.Sprintf("[1/3] 正在从网关下载最新节点程序...\n     下载地址: %s", downloadURL))
 
+	// Configure TLS: strictly verify against configured gateway CA certificate; NEVER use InsecureSkipVerify!
+	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
+	if n.cfg.CAFile != "" {
+		caPath := n.cfg.CAFile
+		if !filepath.IsAbs(caPath) && n.dir != "" {
+			caPath = filepath.Join(n.dir, caPath)
+		}
+		if caPEM, err := os.ReadFile(caPath); err == nil {
+			pool := x509.NewCertPool()
+			if pool.AppendCertsFromPEM(caPEM) {
+				tlsConfig.RootCAs = pool
+			}
+		}
+	}
+
 	client := &http.Client{
 		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			TLSClientConfig: tlsConfig,
 		},
 		Timeout: 90 * time.Second,
 	}
@@ -787,7 +829,7 @@ func (n *Node) performSelfUpgrade(ctx context.Context, downloadURL string) (stri
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("download mesh: %w", err)
+		return "", fmt.Errorf("download mesh failed: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -804,13 +846,32 @@ func (n *Node) performSelfUpgrade(ctx context.Context, downloadURL string) (stri
 		_ = os.Remove(tmpFile)
 	}()
 
+	// Read initial header buffer for binary executable format inspection
+	headerBuf := make([]byte, 512)
+	nRead, err := io.ReadFull(resp.Body, headerBuf)
+	if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
+		return "", fmt.Errorf("read upgrade header: %w", err)
+	}
+	if !isExecutableBinary(headerBuf[:nRead]) {
+		return "", fmt.Errorf("rejected upgrade: downloaded content is not a valid executable binary")
+	}
+
+	if _, err := f.Write(headerBuf[:nRead]); err != nil {
+		return "", fmt.Errorf("write upgrade header: %w", err)
+	}
+
 	written, err := io.Copy(f, resp.Body)
 	if err != nil {
 		return "", fmt.Errorf("write upgrade file: %w", err)
 	}
+	totalBytes := written + int64(nRead)
 	_ = f.Close()
 
-	logs = append(logs, fmt.Sprintf("[2/3] 二进制下载成功，大小: %d 字节，正在执行安全文件替换...", written))
+	if totalBytes < 1024 {
+		return "", fmt.Errorf("rejected upgrade: binary file too small (%d bytes)", totalBytes)
+	}
+
+	logs = append(logs, fmt.Sprintf("[2/3] 二进制下载成功，大小: %d 字节，正在执行安全文件替换...", totalBytes))
 
 	if err := os.Rename(tmpFile, execPath); err != nil {
 		return "", fmt.Errorf("replace executable: %w", err)

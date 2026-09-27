@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"agent-gateway/internal/policy"
@@ -97,9 +98,14 @@ func (s *Server) handlePublicStatus(w http.ResponseWriter, r *http.Request) {
 	if s.devices != nil {
 		if list, err := s.devices.List(r.Context()); err == nil {
 			registered = len(list)
+			now := time.Now()
 			for _, d := range list {
-				if !d.Revoked && time.Now().Before(d.ExpiresAt) {
-					online++
+				if !d.Revoked && now.Before(d.ExpiresAt) {
+					if val, ok := s.nodeRuntime.Load(d.NodeID); ok {
+						if info, ok := val.(NodeRuntimeInfo); ok && now.Sub(info.LastSeen) < 90*time.Second {
+							online++
+						}
+					}
 				}
 			}
 		}
@@ -173,10 +179,40 @@ func (s *Server) handleWaitTask(w http.ResponseWriter, r *http.Request) {
 }
 
 type mcpSessionEntry struct {
+	mu          sync.RWMutex
 	token       string
 	principal   policy.Principal
 	lastChecked time.Time
 	expiresAt   time.Time
+}
+
+func (e *mcpSessionEntry) isLive() bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return time.Now().Before(e.expiresAt)
+}
+
+func (e *mcpSessionEntry) getToken() string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.token
+}
+
+func (e *mcpSessionEntry) getPrincipal() policy.Principal {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.principal
+}
+
+func (e *mcpSessionEntry) update(token string, p policy.Principal) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if token != "" {
+		e.token = token
+	}
+	e.principal = p
+	e.lastChecked = time.Now()
+	e.expiresAt = time.Now().Add(30 * time.Minute)
 }
 
 type sseEndpointRewriter struct {
@@ -215,12 +251,13 @@ func (rw *sseEndpointRewriter) Write(b []byte) (int, error) {
 						sid = sid[:ampIdx]
 					}
 					if sid != "" && rw.server != nil {
-						rw.server.mcpSessions.Store(sid, &mcpSessionEntry{
+						entry := &mcpSessionEntry{
 							token:       rw.token,
 							principal:   rw.principal,
 							lastChecked: time.Now(),
 							expiresAt:   time.Now().Add(30 * time.Minute),
-						})
+						}
+						rw.server.mcpSessions.Store(sid, entry)
 					}
 				}
 				// Append token to endpoint so standard MCP clients automatically send token in subsequent POSTs
@@ -269,28 +306,41 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 		principal = p
 		authenticated = true
 		if sessionID != "" {
-			s.mcpSessions.Store(sessionID, &mcpSessionEntry{
-				token:       token,
-				principal:   p,
-				lastChecked: time.Now(),
-				expiresAt:   time.Now().Add(30 * time.Minute),
-			})
+			if val, ok := s.mcpSessions.Load(sessionID); ok {
+				if entry, ok := val.(*mcpSessionEntry); ok {
+					entry.update(token, p)
+				} else {
+					s.mcpSessions.Store(sessionID, &mcpSessionEntry{
+						token:       token,
+						principal:   p,
+						lastChecked: time.Now(),
+						expiresAt:   time.Now().Add(30 * time.Minute),
+					})
+				}
+			} else {
+				s.mcpSessions.Store(sessionID, &mcpSessionEntry{
+					token:       token,
+					principal:   p,
+					lastChecked: time.Now(),
+					expiresAt:   time.Now().Add(30 * time.Minute),
+				})
+			}
 		}
 	} else if sessionID != "" {
 		// Session request without explicit token: re-validate bound token dynamically
 		if val, ok := s.mcpSessions.Load(sessionID); ok {
-			if entry, ok := val.(*mcpSessionEntry); ok && time.Now().Before(entry.expiresAt) {
+			if entry, ok := val.(*mcpSessionEntry); ok && entry.isLive() {
 				if s.policies != nil {
-					p, err := s.policies.Authenticate(r.Context(), entry.token)
+					p, err := s.policies.Authenticate(r.Context(), entry.getToken())
 					if err != nil {
 						s.mcpSessions.Delete(sessionID)
 						writeError(w, http.StatusUnauthorized, "unauthorized", "session credential has been revoked or expired")
 						return
 					}
 					principal = p
-					entry.principal = p
-					entry.lastChecked = time.Now()
-					entry.expiresAt = time.Now().Add(30 * time.Minute)
+					entry.update("", p)
+				} else {
+					principal = entry.getPrincipal()
 				}
 				authenticated = true
 			} else {
